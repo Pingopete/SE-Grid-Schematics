@@ -9,26 +9,42 @@ Data/
   Scripts/
     GridSchematics/
       GridSchematicsSession.cs
+      Core/
+        ConstructDiscovery.cs
+        GridSchematicsTypes.cs
+        PanelSettings.cs
+      Rendering/
+        LcdSchematicRenderer.cs
+        MarchingSquares.cs
+      Scanning/
+        OrthographicScanner.cs
 ```
 
-## Suggested Next Split
+## Responsibility Map
 
-When the single session component grows too large, split by responsibility:
+- `GridSchematicsSession.cs`: Space Engineers session lifecycle and top-level scan orchestration.
+- `Core/ConstructDiscovery.cs`: finding the active panel, construct grids, scan basis, and bounds.
+- `Core/PanelSettings.cs`: parsing LCD `CustomData` settings and selecting view axes.
+- `Core/GridSchematicsTypes.cs`: shared enums and small data structs.
+- `Scanning/OrthographicScanner.cs`: raycast sampling and occupancy/thickness/density metrics.
+- `Rendering/MarchingSquares.cs`: outline generation from occupied cells.
+- `Rendering/LcdSchematicRenderer.cs`: LCD sprite drawing and text fallback output.
+
+## Suggested Future Split
+
+As features grow, add focused folders instead of rebuilding the large single-file shape:
 
 ```text
 Data/
   Scripts/
     GridSchematics/
       GridSchematicsSession.cs
+      Core/
+      Panels/
       Scanning/
-        ConstructScanner.cs
-        RayMetrics.cs
-        ScanSettings.cs
+      Overlays/
       Rendering/
-        LcdSchematicRenderer.cs
-        MarchingSquares.cs
       Utilities/
-        GridDiscovery.cs
 ```
 
 Suggested namespaces:
@@ -42,9 +58,7 @@ PingoPete.GridSchematics.Utilities
 
 ## Refactor Order
 
-1. Keep the runtime script namespace and folder aligned to `GridSchematics`.
-2. Extract settings parsing into `ScanSettings`.
-3. Extract construct/grid discovery into `GridDiscovery`.
-4. Extract ray scanning into `ConstructScanner`.
-5. Extract LCD drawing into `LcdSchematicRenderer`.
-6. Keep each extraction on its own branch so regressions are easy to isolate.
+1. Keep `main` playable.
+2. Make behavior-preserving file moves on `refactor/*` branches.
+3. Build new behavior on `feature/*` branches after the structural branch is merged.
+4. Keep each branch focused on one subsystem so regressions are easy to isolate.
