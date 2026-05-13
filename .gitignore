@@ -1,0 +1,27 @@
+# Windows / editor noise
+Thumbs.db
+Desktop.ini
+.vs/
+.vscode/
+*.user
+*.suo
+*.tmp
+*.bak
+
+# Build / package outputs
+bin/
+obj/
+dist/
+release/
+*.zip
+*.7z
+
+# Space Engineers local/generated files
+*.log
+*.xmlcache
+*.sbm
+
+# Keep the actual mod source and metadata tracked.
+!Data/
+!README.md
+!docs/
