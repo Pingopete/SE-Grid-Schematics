@@ -1,16 +1,4 @@
-﻿using Sandbox.ModAPI;
-using Sandbox.Game;
-using Sandbox.Game.Entities;
-using VRage.Game.Components;
-using VRage.Game.ModAPI;
-using VRage.Game.GUI.TextPanel;
-using VRage.ModAPI;
-using VRage.Utils;
-using VRageMath;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Text;
+﻿using VRageMath;
 
 namespace PingoPete.GridSchematics
 {

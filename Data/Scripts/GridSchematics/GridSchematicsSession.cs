@@ -1,10 +1,7 @@
 ﻿using Sandbox.ModAPI;
 using Sandbox.Game;
-using Sandbox.Game.Entities;
 using VRage.Game.Components;
 using VRage.Game.ModAPI;
-using VRage.Game.GUI.TextPanel;
-using VRage.ModAPI;
 using VRage.Utils;
 using VRageMath;
 using System;
@@ -118,38 +115,7 @@ namespace PingoPete.GridSchematics
                 _constructGridIds.Clear();
                 _constructGridCount = 0;
 
-                HashSet<IMyEntity> entities = new HashSet<IMyEntity>();
-                MyAPIGateway.Entities.GetEntities(entities, e => e is IMyCubeGrid);
-
-                foreach (var entity in entities)
-                {
-                    var grid = entity as IMyCubeGrid;
-                    if (grid == null || grid.MarkedForClose)
-                        continue;
-
-                    var cubeGrid = grid as MyCubeGrid;
-                    if (cubeGrid == null)
-                        continue;
-
-                    foreach (var fat in cubeGrid.GetFatBlocks())
-                    {
-                        var p = fat as IMyTextPanel;
-                        if (p == null)
-                            continue;
-
-                        if ((p.CustomName ?? "").IndexOf(TAG, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            _panel = p;
-                            _hostGrid = p.CubeGrid;
-                            break;
-                        }
-                    }
-
-                    if (_panel != null)
-                        break;
-                }
-
-                if (_panel == null || _hostGrid == null)
+                if (!TryFindTaggedPanel())
                 {
                     _lastStatus = "No LCD/text panel found with name tag " + TAG;
                     DebugOut(_lastStatus);

@@ -13,6 +13,8 @@ Data/
         ConstructDiscovery.cs
         GridSchematicsTypes.cs
         PanelSettings.cs
+      Panels/
+        PanelDiscovery.cs
       Rendering/
         LcdSchematicRenderer.cs
         MarchingSquares.cs
@@ -26,6 +28,7 @@ Data/
 - `Core/ConstructDiscovery.cs`: finding the active panel, construct grids, scan basis, and bounds.
 - `Core/PanelSettings.cs`: parsing LCD `CustomData` settings and selecting view axes.
 - `Core/GridSchematicsTypes.cs`: shared enums and small data structs.
+- `Panels/PanelDiscovery.cs`: locating tagged LCD panels and assigning the active host grid.
 - `Scanning/OrthographicScanner.cs`: raycast sampling and occupancy/thickness/density metrics.
 - `Rendering/MarchingSquares.cs`: outline generation from occupied cells.
 - `Rendering/LcdSchematicRenderer.cs`: LCD sprite drawing and text fallback output.
