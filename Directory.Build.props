@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'GridSchematics.CompileCheck'">
+    <BaseIntermediateOutputPath>.compilecheck\obj\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>.compilecheck\obj\</MSBuildProjectExtensionsPath>
+  </PropertyGroup>
+</Project>

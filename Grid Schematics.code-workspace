@@ -1,0 +1,23 @@
+{
+	"folders": [
+		{
+			"path": "../Raycast Grid Discovery"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../Context Build Info Conveyor real topology"
+		},
+		{
+			"path": "../Context Button App"
+		},
+		{
+			"path": "../Context Old PB Schematics Test Run"
+		},
+		{
+			"path": "../Context Touchscreen API"
+		}
+	],
+	"settings": {}
+}

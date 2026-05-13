@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <LCDTextures>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Conveyor" />
+      <SpritePath>Textures\UI\Icon_Conveyor.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_FillBars" />
+      <SpritePath>Textures\UI\Icon_Fillbars.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Border" />
+      <SpritePath>Textures\UI\Icon_Square.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_HullScan" />
+      <SpritePath>Textures\UI\icon_FilledSquare.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Grid" />
+      <SpritePath>Textures\UI\Icon_Hash.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Reference" />
+      <SpritePath>Textures\UI\Icon_Plus.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Close" />
+      <SpritePath>Textures\UI\Icon_Cross.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Minimize" />
+      <SpritePath>Textures\UI\Icon_Minus.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_ConnectorFront" />
+      <SpritePath>Textures\UI\Icon_ConnectorFront.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_ConnectorSide" />
+      <SpritePath>Textures\UI\Icon_ConnectorSide.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Sorter" />
+      <SpritePath>Textures\UI\Icon_Sorter2.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Cursor" />
+      <SpritePath>Textures\UI\Icon_Cursor.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Circle" />
+      <SpritePath>Textures\UI\Icon_Circle.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_CrossBoxed" />
+      <SpritePath>Textures\UI\Icon_CrossBoxed.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_InwardArrows" />
+      <SpritePath>Textures\UI\Icon_inwardArrows.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_PlusBoxed" />
+      <SpritePath>Textures\UI\Icon_PlusBoxed.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_SorterAlt" />
+      <SpritePath>Textures\UI\Icon_Sorter.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Triangle" />
+      <SpritePath>Textures\UI\Icon_Triangle.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+  </LCDTextures>
+</Definitions>
