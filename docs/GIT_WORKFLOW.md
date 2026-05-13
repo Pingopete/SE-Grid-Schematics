@@ -45,6 +45,6 @@ Keep commits small enough that they describe one idea:
 ## Before Merging
 
 - Launch Space Engineers and confirm the mod loads.
-- Check that a panel named `[SCHEMA_TEST]` updates.
+- Check that a panel named `[GRID_SCHEMATICS]` updates.
 - Test any changed `CustomData` setting.
 - Keep `main` playable.

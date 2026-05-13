@@ -1,19 +1,19 @@
-# Raycast Grid Discovery
+# SE Grid Schematics
 
-Space Engineers mod prototype for scanning a construct with orthographic raycasts and drawing a schematic-style LCD preview.
+Space Engineers mod for scanning a construct and drawing a schematic-style LCD preview.
 
 ## Current Status
 
 The active mod code lives in:
 
 ```text
-Data/Scripts/SchemaRayTest/SchemaRayTest.cs
+Data/Scripts/GridSchematics/GridSchematicsSession.cs
 ```
 
 In game, add an LCD or text panel whose name contains:
 
 ```text
-[SCHEMA_TEST]
+[GRID_SCHEMATICS]
 ```
 
 Optional panel `CustomData` settings:

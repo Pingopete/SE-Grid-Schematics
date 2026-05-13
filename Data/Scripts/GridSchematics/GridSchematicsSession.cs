@@ -12,12 +12,12 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Text;
 
-namespace PingoPete.SchemaRayTest
+namespace PingoPete.GridSchematics
 {
     [MySessionComponentDescriptor(MyUpdateOrder.AfterSimulation)]
-    public class SchemaRayTestSession : MySessionComponentBase
+    public class GridSchematicsSession : MySessionComponentBase
     {
-        const string TAG = "[SCHEMA_TEST]";
+        const string TAG = "[GRID_SCHEMATICS]";
         const int MAX_RES = 512;
         const int DEFAULT_RES = 256;
         const int SETTINGS_CHECK_EVERY_TICKS = 180;
@@ -97,7 +97,7 @@ namespace PingoPete.SchemaRayTest
         double _lastMarchMs;
         float _maxThickness;
         float _maxDensity;
-        string _lastStatus = "Waiting for panel named [SCHEMA_TEST]";
+        string _lastStatus = "Waiting for panel named [GRID_SCHEMATICS]";
 
         public override void UpdateAfterSimulation()
         {
@@ -127,7 +127,7 @@ namespace PingoPete.SchemaRayTest
 
         void DebugOut(string msg)
         {
-            string line = "[SchemaRayTest] " + msg;
+            string line = "[GridSchematics] " + msg;
             MyLog.Default.WriteLineAndConsole(line);
 
             try
@@ -220,7 +220,7 @@ namespace PingoPete.SchemaRayTest
                 _lastStatus = "ERROR:\n" + e;
                 TryWriteTextOnly(_lastStatus);
                 DebugOut("Exception: " + e.Message);
-                MyLog.Default.WriteLineAndConsole("[SchemaRayTest] " + e);
+                MyLog.Default.WriteLineAndConsole("[GridSchematics] " + e);
             }
         }
 
@@ -770,7 +770,7 @@ namespace PingoPete.SchemaRayTest
         string BuildAsciiReport()
         {
             _text.Clear();
-            _text.AppendLine("SCHEMA RAY TEST");
+            _text.AppendLine("GRID SCHEMATICS");
             _text.AppendLine("View: " + _activeView);
             _text.AppendLine("Fill: " + _fillMode);
             _text.AppendLine("Res: " + _activeRes + "x" + _activeRes);

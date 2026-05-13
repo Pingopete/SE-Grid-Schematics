@@ -7,8 +7,8 @@ Space Engineers requires runtime assets to stay under `Data/`, so organization s
 ```text
 Data/
   Scripts/
-    SchemaRayTest/
-      SchemaRayTest.cs
+    GridSchematics/
+      GridSchematicsSession.cs
 ```
 
 ## Suggested Next Split
@@ -18,8 +18,8 @@ When the single session component grows too large, split by responsibility:
 ```text
 Data/
   Scripts/
-    RaycastGridDiscovery/
-      RaycastGridDiscoverySession.cs
+    GridSchematics/
+      GridSchematicsSession.cs
       Scanning/
         ConstructScanner.cs
         RayMetrics.cs
@@ -34,15 +34,15 @@ Data/
 Suggested namespaces:
 
 ```text
-PingoPete.RaycastGridDiscovery
-PingoPete.RaycastGridDiscovery.Scanning
-PingoPete.RaycastGridDiscovery.Rendering
-PingoPete.RaycastGridDiscovery.Utilities
+PingoPete.GridSchematics
+PingoPete.GridSchematics.Scanning
+PingoPete.GridSchematics.Rendering
+PingoPete.GridSchematics.Utilities
 ```
 
 ## Refactor Order
 
-1. Rename `SchemaRayTest` to `RaycastGridDiscovery` after Git history is established.
+1. Keep the runtime script namespace and folder aligned to `GridSchematics`.
 2. Extract settings parsing into `ScanSettings`.
 3. Extract construct/grid discovery into `GridDiscovery`.
 4. Extract ray scanning into `ConstructScanner`.
