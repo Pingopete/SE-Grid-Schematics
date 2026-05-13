@@ -10,6 +10,7 @@ namespace PingoPete.GridSchematics
 {
     public partial class GridSchematicsSession
     {
+        // Builds the same-construct grid set, combined bounds, and scan basis.
         bool BuildConstructGridSet()
         {
             _constructGrids.Clear();

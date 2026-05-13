@@ -4,11 +4,18 @@ Space Engineers mod for scanning a construct and drawing a schematic-style LCD p
 
 ## Current Status
 
-The active mod code lives in:
+The mod entry point lives in:
 
 ```text
 Data/Scripts/GridSchematics/GridSchematicsSession.cs
 ```
+
+Implementation is split by responsibility under `Data/Scripts/GridSchematics/`:
+
+- `Core/`: shared types, settings, construct discovery, and scan basis selection
+- `Panels/`: panel discovery and future panel routing
+- `Scanning/`: raycast sampling and scan metrics
+- `Rendering/`: LCD drawing and schematic outline generation
 
 In game, add an LCD or text panel whose name contains:
 
@@ -40,4 +47,4 @@ git switch -c refactor/scanner-core
 git switch -c fix/raycast-filtering
 ```
 
-See [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md) and [docs/MOD_STRUCTURE.md](docs/MOD_STRUCTURE.md).
+See [docs/DEVELOPER_NOTES.md](docs/DEVELOPER_NOTES.md), [docs/GIT_WORKFLOW.md](docs/GIT_WORKFLOW.md), and [docs/MOD_STRUCTURE.md](docs/MOD_STRUCTURE.md).

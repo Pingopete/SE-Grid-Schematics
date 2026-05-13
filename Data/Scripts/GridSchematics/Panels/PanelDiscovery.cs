@@ -9,6 +9,7 @@ namespace PingoPete.GridSchematics
 {
     public partial class GridSchematicsSession
     {
+        // Current single tagged panel discovery; multipanel routing starts here.
         bool TryFindTaggedPanel()
         {
             HashSet<IMyEntity> entities = new HashSet<IMyEntity>();

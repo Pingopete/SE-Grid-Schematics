@@ -19,6 +19,8 @@ git switch -c feature/multi-panel-output
 
 See [ROADMAP.md](ROADMAP.md) for planned feature branches.
 
+After `refactor/mod-structure` has been tested and merged, create new feature branches from updated `main` so future work starts from the organized file layout.
+
 ## Daily Loop
 
 ```powershell

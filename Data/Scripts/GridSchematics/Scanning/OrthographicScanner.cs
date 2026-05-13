@@ -8,6 +8,7 @@ namespace PingoPete.GridSchematics
 {
     public partial class GridSchematicsSession
     {
+        // Samples occupied cells by casting orthographic physics rays through the construct.
         void ScanOrthographic()
         {
             Array.Clear(_occupied, 0, _occupied.Length);

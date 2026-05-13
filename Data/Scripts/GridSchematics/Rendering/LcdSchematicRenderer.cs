@@ -7,6 +7,7 @@ namespace PingoPete.GridSchematics
 {
     public partial class GridSchematicsSession
     {
+        // Draws the current schematic preview to the active LCD surface.
         void DrawPreview()
         {
             if (_panel == null)

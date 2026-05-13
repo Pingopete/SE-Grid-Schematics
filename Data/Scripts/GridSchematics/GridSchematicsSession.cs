@@ -12,6 +12,7 @@ using System.Text;
 namespace PingoPete.GridSchematics
 {
     [MySessionComponentDescriptor(MyUpdateOrder.AfterSimulation)]
+    // Session lifecycle and top-level scan orchestration.
     public partial class GridSchematicsSession : MySessionComponentBase
     {
         const string TAG = "[GRID_SCHEMATICS]";
