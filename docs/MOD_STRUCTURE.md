@@ -56,6 +56,13 @@ PingoPete.GridSchematics.Rendering
 PingoPete.GridSchematics.Utilities
 ```
 
+As overlays and drawers are added, keep domain-specific logic in focused folders:
+
+- `Overlays/`: cargo, engine, oxygen, power, conveyor, and weapons schematic layers.
+- `Panels/`: multipanel routing, info drawers, setting menu, panel roles, and display mode selection.
+- `Scanning/`: reusable scan passes and block/system classification.
+- `Core/`: shared state, settings, alerts, and coordination models.
+
 ## Refactor Order
 
 1. Keep `main` playable.

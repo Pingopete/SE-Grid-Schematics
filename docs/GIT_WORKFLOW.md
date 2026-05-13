@@ -17,6 +17,8 @@ git pull
 git switch -c feature/multi-panel-output
 ```
 
+See [ROADMAP.md](ROADMAP.md) for planned feature branches.
+
 ## Daily Loop
 
 ```powershell
