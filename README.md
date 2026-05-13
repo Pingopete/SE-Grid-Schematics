@@ -1,6 +1,6 @@
 # SE Grid Schematics
 
-Space Engineers mod for scanning a construct and drawing a schematic-style LCD preview.
+A Space Engineers LCD App aiming to provide functional real-grid schematic information and block interaction.
 
 ## Current Status
 
@@ -17,11 +17,8 @@ Implementation is split by responsibility under `Data/Scripts/GridSchematics/`:
 - `Scanning/`: raycast sampling and scan metrics
 - `Rendering/`: LCD drawing and schematic outline generation
 
-In game, add an LCD or text panel whose name contains:
+In game, set an LCD panel app to Grid Schematics
 
-```text
-[GRID_SCHEMATICS]
-```
 
 Optional panel `CustomData` settings:
 
