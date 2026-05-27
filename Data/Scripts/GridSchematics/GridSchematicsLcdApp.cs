@@ -5,8 +5,10 @@ using VRage.Game.Components;
 using VRage.Game.GUI.TextPanel;
 using Sandbox.ModAPI.Interfaces;
 using System;
+using System.Collections.Generic;
 using VRageMath;
 using VRage.Utils;
+using VRage;
 
 namespace GridSchematics
 {
@@ -136,6 +138,7 @@ namespace GridSchematics
         }
         public int LastPanelRenderTickDelta { get; private set; }
         public int LastPanelRenderIntervalTicks { get; private set; }
+        public int CurrentTick { get { return _currentTick; } }
 
         string _lastCustomData = string.Empty;
         long _panelEntityId;
@@ -151,6 +154,7 @@ namespace GridSchematics
         bool _lastTouchPressed;
         Vector2 _lastCursorPosition;
         string _lastHoverRegionId = string.Empty;
+        string _suppressCargoReleaseRegionId = string.Empty;
         string _lastTouchStatus = string.Empty;
         int _menuLeaveTick = -1;
         int _lastStartupScanAttemptTick = -StartupScanRetryTicks;
@@ -1153,6 +1157,7 @@ namespace GridSchematics
             RegisterViewButtonHitRegions();
             UpdateMouseControlInputState();
             TouchInput.ProcessInput();
+            UpdateCargoTransferCaptureTimeout();
             bool changed = HasTouchVisualChanged(out sceneChanged, out cursorChanged, out cursorMotionChanged);
             bool actionChanged = false;
             if (Ui.CursorCalibrationRequired && Ui.CalibrationActive && TouchInput.JustPressed)
@@ -1169,7 +1174,7 @@ namespace GridSchematics
                 return;
             }
 
-            if (!string.IsNullOrEmpty(TouchInput.LastHitRegionId) && !IsOverlayBlockRegion(TouchInput.LastHitRegionId))
+            if (TouchInput.JustPressed && IsImmediateCargoInfoPressRegion(TouchInput.HoverRegionId))
             {
                 changed = true;
                 actionChanged = true;
@@ -1177,16 +1182,41 @@ namespace GridSchematics
                 _isPanningRender = false;
                 _pendingClearSelectedOverlay = false;
                 _selectedOverlayPanMoved = false;
+                _suppressCargoReleaseRegionId = TouchInput.HoverRegionId;
                 Ui.HitRegions.Clear();
-                Ui.HitRegions.Add(new HitRegion(0, 0, 1, 1, TouchInput.LastHitRegionId, "Touched region"));
-
-                if (IsUiBlockerRegion(TouchInput.LastHitRegionId))
+                Ui.HitRegions.Add(new HitRegion(0, 0, 1, 1, TouchInput.HoverRegionId, "Touched region"));
+                PlayMenuPressSound();
+                HandleMenuPress(TouchInput.HoverRegionId);
+            }
+            else if (!string.IsNullOrEmpty(TouchInput.LastHitRegionId) && !IsOverlayBlockRegion(TouchInput.LastHitRegionId))
+            {
+                bool suppressRelease = !string.IsNullOrEmpty(_suppressCargoReleaseRegionId) && string.Equals(_suppressCargoReleaseRegionId, TouchInput.LastHitRegionId, StringComparison.Ordinal);
+                _suppressCargoReleaseRegionId = string.Empty;
+                if (suppressRelease)
                 {
+                    changed = true;
+                    actionChanged = true;
+                    _renderDirty = true;
                 }
                 else
                 {
-                    PlayMenuPressSound();
-                    HandleMenuPress(TouchInput.LastHitRegionId);
+                    changed = true;
+                    actionChanged = true;
+                    _renderDirty = true;
+                    _isPanningRender = false;
+                    _pendingClearSelectedOverlay = false;
+                    _selectedOverlayPanMoved = false;
+                    Ui.HitRegions.Clear();
+                    Ui.HitRegions.Add(new HitRegion(0, 0, 1, 1, TouchInput.LastHitRegionId, "Touched region"));
+
+                    if (IsUiBlockerRegion(TouchInput.LastHitRegionId))
+                    {
+                    }
+                    else
+                    {
+                        PlayMenuPressSound();
+                        HandleMenuPress(TouchInput.LastHitRegionId);
+                    }
                 }
             }
             else if (TouchInput.JustPressed && Ui.SelectedOverlayBlockId != null)
@@ -1237,15 +1267,11 @@ namespace GridSchematics
                 _renderDirty = true;
             }
 
-            if (TouchInput.SecondaryJustPressed && Ui.SelectedOverlayBlockId != null && !IsCursorInActiveMenuField())
+            if (UpdateCargoActionWheel())
             {
-                if (TryToggleSelectedOverlayBlock())
-                {
-                    PlayMenuPressSound();
-                    changed = true;
-                    actionChanged = true;
-                    _renderDirty = true;
-                }
+                changed = true;
+                actionChanged = true;
+                _renderDirty = true;
             }
 
             if (Ui.SelectedOverlayBlockId != null)
@@ -1331,6 +1357,8 @@ namespace GridSchematics
 
         void HandleMenuPress(string regionId)
         {
+            if (HandleCargoInfoPress(regionId))
+                return;
             if (HandleInfoPanelBlockTabPress(regionId))
                 return;
 
@@ -1753,19 +1781,1380 @@ namespace GridSchematics
                     break;
             }
         }
+        void UpdateCargoTransferCaptureTimeout()
+        {
+            if (Ui == null || string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget))
+                return;
+            if (Ui.CargoTransferCaptureUntilTick > 0 && _currentTick > Ui.CargoTransferCaptureUntilTick)
+            {
+                Ui.CargoTransferCaptureTarget = string.Empty;
+                Ui.CargoTransferCaptureUntilTick = 0;
+                _renderDirty = true;
+                return;
+            }
+            _renderDirty = true;
+        }
+        bool IsImmediateCargoInfoPressRegion(string regionId)
+        {
+            if (string.IsNullOrEmpty(regionId))
+                return false;
 
+            if (string.Equals(regionId, UiLayout.CargoInfoSendBlockToTransferId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoFilterToggleId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoMixAddToQuotaId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferModeId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoActionsModeId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferSourceSelectId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferDestSelectId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferSourceViewId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferDestViewId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferDirectionId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferClearId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferNowId, StringComparison.Ordinal))
+                return true;
+
+            return regionId.StartsWith(UiLayout.CargoInfoMixSortPrefix, StringComparison.Ordinal) ||
+                regionId.StartsWith(UiLayout.CargoInfoFilterPrefix, StringComparison.Ordinal) ||
+                regionId.StartsWith(UiLayout.CargoInfoMixRowPrefix, StringComparison.Ordinal) ||
+                regionId.StartsWith(UiLayout.CargoInfoTransferQuotaPrefix, StringComparison.Ordinal);
+        }
+
+
+        bool HandleCargoInfoPress(string regionId)
+        {
+            if (string.IsNullOrEmpty(regionId))
+                return false;
+
+            if (string.Equals(regionId, UiLayout.CargoInfoTransferModeId, StringComparison.Ordinal))
+            {
+                Ui.CargoRightPanelMode = "TRANSFER";
+                ActivateCargoTransferSelectionFocus(Ui.CargoTransferMixViewTarget);
+                _renderDirty = true;
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoActionsModeId, StringComparison.Ordinal))
+            {
+                Ui.CargoRightPanelMode = "ACTIONS";
+                Ui.CargoTransferCaptureTarget = string.Empty;
+                Ui.CargoTransferSelectionActive = false;
+                _renderDirty = true;
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoTransferSourceSelectId, StringComparison.Ordinal))
+            {
+                if (IsControlHeld())
+                    ClearCargoTransferSelection("SOURCE");
+                else
+                    BeginCargoTransferCapture("SOURCE");
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoTransferDestSelectId, StringComparison.Ordinal))
+            {
+                if (IsControlHeld())
+                    ClearCargoTransferSelection("DEST");
+                else
+                    BeginCargoTransferCapture("DEST");
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoTransferSourceViewId, StringComparison.Ordinal))
+            {
+                SetCargoTransferMixView("SOURCE");
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoTransferDestViewId, StringComparison.Ordinal))
+            {
+                SetCargoTransferMixView("DEST");
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoTransferDirectionId, StringComparison.Ordinal))
+            {
+                Ui.CargoTransferDirectionReversed = !Ui.CargoTransferDirectionReversed;
+                Ui.CargoTransferQuotaItems.Clear();
+                Ui.CargoMixSelectedItemKeys.Clear();
+                Ui.CargoTransferQuotaScrollIndex = 0;
+                SetCargoTransferMixView(GetCargoTransferActiveSourceTarget());
+                _renderDirty = true;
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoTransferClearId, StringComparison.Ordinal))
+            {
+                Ui.CargoTransferQuotaItems.Clear();
+                Ui.CargoMixSelectedItemKeys.Clear();
+                Ui.CargoTransferQuotaScrollIndex = 0;
+                _renderDirty = true;
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoTransferNowId, StringComparison.Ordinal))
+            {
+                ExecuteCargoTransferQuota();
+                _renderDirty = true;
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoSendBlockToTransferId, StringComparison.Ordinal))
+            {
+                HandleCargoLoadSendButton();
+                _renderDirty = true;
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoMixAddToQuotaId, StringComparison.Ordinal))
+            {
+                AddCargoMixSelectionToTransferQuota();
+                _renderDirty = true;
+                return true;
+            }
+
+            if (regionId.StartsWith(UiLayout.CargoInfoMixRowPrefix, StringComparison.Ordinal))
+            {
+                int row;
+                if (!int.TryParse(regionId.Substring(UiLayout.CargoInfoMixRowPrefix.Length), out row))
+                    return true;
+                if (IsShiftHeld())
+                    AddCargoMixRowToTransferQuota(row);
+                else
+                    ToggleCargoMixRowSelection(row);
+                _renderDirty = true;
+                return true;
+            }
+
+            if (regionId.StartsWith(UiLayout.CargoInfoTransferQuotaPrefix, StringComparison.Ordinal))
+            {
+                HandleCargoTransferQuotaPress(regionId.Substring(UiLayout.CargoInfoTransferQuotaPrefix.Length));
+                _renderDirty = true;
+                return true;
+            }
+            if (string.Equals(regionId, UiLayout.CargoInfoFilterToggleId, StringComparison.Ordinal))
+            {
+                Ui.CargoFilterDropdownOpen = !Ui.CargoFilterDropdownOpen;
+                _renderDirty = true;
+                return true;
+            }
+
+            if (string.Equals(regionId, UiLayout.CargoInfoFocusAllId, StringComparison.Ordinal))
+                return SetCargoInfoFocus("ALL", "ALL");
+            if (string.Equals(regionId, UiLayout.CargoInfoFocusReachableId, StringComparison.Ordinal))
+                return SetCargoInfoFocus("REACHABLE", Ui.CargoInfoFilter);
+            if (string.Equals(regionId, UiLayout.CargoInfoFocusIsolatedId, StringComparison.Ordinal))
+                return SetCargoInfoFocus("ISOLATED", Ui.CargoInfoFilter);
+            if (string.Equals(regionId, UiLayout.CargoInfoFocusFullId, StringComparison.Ordinal))
+                return SetCargoInfoFocus("FULL", Ui.CargoInfoFilter);
+            if (string.Equals(regionId, UiLayout.CargoInfoFocusOfflineId, StringComparison.Ordinal))
+                return SetCargoInfoFocus("OFFLINE", Ui.CargoInfoFilter);
+
+            if (regionId.StartsWith(UiLayout.CargoInfoBlockPrefix, StringComparison.Ordinal))
+            {
+                int lane;
+                if (!int.TryParse(regionId.Substring(UiLayout.CargoInfoBlockPrefix.Length), out lane))
+                    return true;
+                bool selectedBlock = SelectCargoInfoBlockBar(lane);
+                if (selectedBlock)
+                    Ui.CargoBlockCursorActiveUntilTick = _currentTick + 300;
+                if (selectedBlock && !string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget))
+                    CaptureSelectedBlockStackForTransferTarget(Ui.CargoTransferCaptureTarget);
+                return selectedBlock;
+            }
+
+            if (regionId.StartsWith(UiLayout.CargoInfoFilterPrefix, StringComparison.Ordinal))
+            {
+                string filter = NormalizeCargoInfoSelector(regionId.Substring(UiLayout.CargoInfoFilterPrefix.Length));
+                Ui.CargoFilterDropdownOpen = false;
+                return SetCargoInfoFocus(filter, filter);
+            }
+
+            if (regionId.StartsWith(UiLayout.CargoInfoMixSortPrefix, StringComparison.Ordinal))
+            {
+                string sortKey = NormalizeCargoMixSortKey(regionId.Substring(UiLayout.CargoInfoMixSortPrefix.Length));
+                if (string.IsNullOrEmpty(sortKey))
+                    return true;
+
+                if (!string.Equals(Ui.CargoMixSortKey ?? string.Empty, sortKey, StringComparison.Ordinal))
+                {
+                    Ui.CargoMixSortKey = sortKey;
+                    Ui.CargoMixSortDirection = 1;
+                }
+                else
+                {
+                    Ui.CargoMixSortDirection = Ui.CargoMixSortDirection == 1 ? 2 : 1;
+                }
+
+                Ui.CargoMixScrollIndex = 0;
+                _renderDirty = true;
+                return true;
+            }
+            if (regionId.StartsWith(UiLayout.CargoInfoActionPrefix, StringComparison.Ordinal))
+            {
+                int row;
+                if (!int.TryParse(regionId.Substring(UiLayout.CargoInfoActionPrefix.Length), out row))
+                    return true;
+
+                var actions = BuildSelectedCargoActionRows();
+                if (actions.Count == 0)
+                    return true;
+
+                int index = Ui.CargoActionScrollIndex + row;
+                if (index < 0)
+                    index = 0;
+                if (index >= actions.Count)
+                    index = actions.Count - 1;
+
+                Ui.SelectedOverlayLineIndex = index;
+                ApplyOverlayInfoLine(actions[index]);
+                _renderDirty = true;
+                return true;
+            }
+
+            return false;
+        }
+
+
+        bool SelectCargoInfoBlockBar(int lane)
+        {
+            if (lane < 0)
+                return true;
+            var summary = Ui != null ? Ui.CachedCargoLoadSummary : null;
+            if (summary == null || summary.Blocks == null || summary.Blocks.Count == 0)
+                return true;
+
+            Ui.CargoBlockCursorIndex = lane;
+            int index = Ui.CargoBlockScrollIndex + lane;
+            if (index < 0 || index >= summary.Blocks.Count)
+                return true;
+
+            var cargoBlock = summary.Blocks[index];
+            var block = cargoBlock != null ? cargoBlock.Block : null;
+            if (block == null)
+                return true;
+
+            Ui.SelectedBlockStackItems.Clear();
+            Ui.SelectedBlockStackItems.Add(new BlockStackItem
+            {
+                Id = "cargo:block:" + block.EntityId.ToString(),
+                Name = ReadableBlockName(block),
+                Block = block,
+                Projected = new Vector2I(0, 0),
+                Depth = 0
+            });
+            Ui.SelectedBlockStackSignature = "cargo:block:" + block.EntityId.ToString();
+            Ui.SelectedBlockStackIndex = 0;
+            Ui.SelectedBlockStackScrollIndex = 0;
+            Ui.SelectedOverlayLineIndex = 0;
+            Ui.SelectedOverlayBlockId = FindOverlayRegionIdForBlock(block);
+            Ui.ShowInfoPanel = SupportsInfoPanel;
+            Ui.InfoPanelMode = InfoPanelMode.Systems;
+            Ui.ActiveMenu = MenuPanel.None;
+            _renderDirty = true;
+            _hasLastMouseWheelValue = false;
+            return true;
+        }
+
+        void SyncCargoBlockCursorToSelectedSingleBlock()
+        {
+            if (Ui == null || Ui.SelectedBlockStackItems == null || Ui.SelectedBlockStackItems.Count == 0)
+                return;
+            if (Ui.SelectedBlockStackIndex < 0 || Ui.SelectedBlockStackIndex >= Ui.SelectedBlockStackItems.Count)
+                return;
+
+            var selected = Ui.SelectedBlockStackItems[Ui.SelectedBlockStackIndex];
+            var selectedBlock = selected != null ? selected.Block : null;
+            if (selectedBlock == null)
+                return;
+
+            var summary = Ui.CachedCargoLoadSummary;
+            if (summary == null || summary.Blocks == null || summary.Blocks.Count == 0)
+                return;
+
+            int selectedIndex = -1;
+            long selectedId = selectedBlock.EntityId;
+            for (int i = 0; i < summary.Blocks.Count; i++)
+            {
+                var cargo = summary.Blocks[i];
+                var block = cargo != null ? cargo.Block : null;
+                if (block != null && block.EntityId == selectedId)
+                {
+                    selectedIndex = i;
+                    break;
+                }
+            }
+            if (selectedIndex < 0)
+                return;
+
+            const int visible = 13;
+            const int preferredCursor = 6;
+            int count = summary.Blocks.Count;
+            int maxFirst = Math.Max(0, count - visible);
+            int first = selectedIndex - preferredCursor;
+            int cursor = preferredCursor;
+            if (first < 0)
+            {
+                cursor = selectedIndex;
+                first = 0;
+            }
+            else if (first > maxFirst)
+            {
+                first = maxFirst;
+                cursor = selectedIndex - first;
+            }
+            int maxCursor = Math.Min(visible - 1, count - first - 1);
+            if (cursor < 0)
+                cursor = 0;
+            if (cursor > maxCursor)
+                cursor = maxCursor;
+
+            Ui.CargoBlockScrollIndex = first;
+            Ui.CargoBlockCursorIndex = cursor;
+        }
+        string FindOverlayRegionIdForBlock(IMyCubeBlock block)
+        {
+            if (block == null || Ui == null || Ui.OverlayBlockRegions == null)
+                return null;
+            long entityId = block.EntityId;
+            for (int i = 0; i < Ui.OverlayBlockRegions.Count; i++)
+            {
+                var info = Ui.OverlayBlockRegions[i];
+                if (info == null || info.Blocks == null)
+                    continue;
+                for (int j = 0; j < info.Blocks.Count; j++)
+                {
+                    var candidate = info.Blocks[j];
+                    if (candidate != null && candidate.EntityId == entityId)
+                        return info.Id;
+                }
+            }
+            return null;
+        }
+
+        string ReadableBlockName(IMyCubeBlock block)
+        {
+            if (block == null)
+                return "BLOCK";
+            string name = block.DisplayNameText;
+            if (string.IsNullOrEmpty(name))
+                name = block.DefinitionDisplayNameText;
+            if (string.IsNullOrEmpty(name))
+                name = "BLOCK";
+            return name;
+        }
+        bool SetCargoInfoFocus(string focus, string filter)
+        {
+            Ui.CargoInfoFocus = NormalizeCargoInfoSelector(focus);
+            Ui.CargoInfoFilter = NormalizeCargoInfoSelector(filter);
+            Ui.CargoBlockScrollIndex = 0;
+            Ui.CargoBlockCursorIndex = 6;
+            Ui.CargoMixScrollIndex = 0;
+            Ui.CargoActionScrollIndex = 0;
+            Ui.CachedCargoSummaryKey = string.Empty;
+            Ui.CachedCargoLoadSummaryKey = string.Empty;
+            _renderDirty = true;
+            return true;
+        }
+
+        string NormalizeCargoMixSortKey(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+            value = value.Trim().ToUpperInvariant();
+            if (value == "ITEM" || value == "QUANT" || value == "VOLUME" || value == "MASS")
+                return value;
+            return string.Empty;
+        }
+        string NormalizeCargoInfoSelector(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "ALL";
+            value = value.Trim().ToUpperInvariant();
+            if (value == "COMPONENT" || value == "COMPONENTS") return "COMP";
+            if (value == "AMMUNITION") return "TOOLS";
+            if (value == "TOOL") return "TOOLS";
+            if (value == "CONSUMABLES") return "CONSUMABLE";
+            if (value == "REACH") return "REACHABLE";
+            if (value == "ISOLATE") return "ISOLATED";
+            if (value == "OFF") return "OFFLINE";
+            if (value == "ALL" || value == "ORE" || value == "INGOT" || value == "COMP" || value == "TOOLS" || value == "CONSUMABLE" || value == "OTHER") return value;
+            if (value == "REACHABLE" || value == "ISOLATED" || value == "FULL" || value == "OFFLINE") return value;
+            return "ALL";
+        }
+        void BeginCargoTransferCapture(string target)
+        {
+            if (Ui == null)
+                return;
+            target = string.Equals(target, "DEST", StringComparison.Ordinal) ? "DEST" : "SOURCE";
+            Ui.CargoRightPanelMode = "TRANSFER";
+            Ui.CargoTransferCaptureTarget = string.Equals(Ui.CargoTransferCaptureTarget, target, StringComparison.Ordinal) ? string.Empty : target;
+            Ui.CargoTransferCaptureUntilTick = string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget) ? 0 : _currentTick + 300;
+            if (!string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget))
+                Ui.CargoTransferSelectionActive = true;
+            _renderDirty = true;
+        }
+
+        void SetCargoTransferMixView(string target)
+        {
+            if (Ui == null)
+                return;
+            Ui.CargoRightPanelMode = "TRANSFER";
+            Ui.CargoTransferMixViewTarget = string.Equals(target, "DEST", StringComparison.Ordinal) ? "DEST" : "SOURCE";
+            Ui.CargoMixSelectedItemKeys.Clear();
+            Ui.CargoMixScrollIndex = 0;
+            Ui.CachedCargoSummaryKey = string.Empty;
+            Ui.CachedCargoSummary = null;
+            ActivateCargoTransferSelectionFocus(target);
+            _renderDirty = true;
+        }
+
+        string GetCargoTransferActiveSourceTarget()
+        {
+            return Ui != null && Ui.CargoTransferDirectionReversed ? "DEST" : "SOURCE";
+        }
+        string ResolveCargoTransferCaptureTarget()
+        {
+            if (Ui == null)
+                return "SOURCE";
+            if (string.Equals(Ui.CargoTransferCaptureTarget, "SOURCE", StringComparison.Ordinal) ||
+                string.Equals(Ui.CargoTransferCaptureTarget, "DEST", StringComparison.Ordinal))
+                return Ui.CargoTransferCaptureTarget;
+            if (Ui.CargoTransferSourceItems == null || Ui.CargoTransferSourceItems.Count == 0)
+                return "SOURCE";
+            if (Ui.CargoTransferDestItems == null || Ui.CargoTransferDestItems.Count == 0)
+                return "DEST";
+            return "SOURCE";
+        }
+
+        void ClearCargoTransferSelection(string target)
+        {
+            if (Ui == null)
+                return;
+            bool dest = string.Equals(target, "DEST", StringComparison.Ordinal);
+            var items = dest ? Ui.CargoTransferDestItems : Ui.CargoTransferSourceItems;
+            if (items != null)
+                items.Clear();
+            if (dest)
+                Ui.CargoTransferDestLabel = string.Empty;
+            else
+                Ui.CargoTransferSourceLabel = string.Empty;
+            if (string.Equals(Ui.CargoTransferCaptureTarget ?? string.Empty, dest ? "DEST" : "SOURCE", StringComparison.Ordinal))
+            {
+                Ui.CargoTransferCaptureTarget = string.Empty;
+                Ui.CargoTransferCaptureUntilTick = 0;
+            }
+            if (!dest)
+            {
+                Ui.CargoTransferQuotaItems.Clear();
+                Ui.CargoMixSelectedItemKeys.Clear();
+                Ui.CargoTransferQuotaScrollIndex = 0;
+            }
+            if ((Ui.CargoTransferSourceItems == null || Ui.CargoTransferSourceItems.Count == 0) &&
+                (Ui.CargoTransferDestItems == null || Ui.CargoTransferDestItems.Count == 0))
+                Ui.CargoTransferSelectionActive = false;
+            Ui.CachedCargoSummaryKey = string.Empty;
+            Ui.CachedCargoSummary = null;
+            _renderDirty = true;
+        }
+
+        void ActivateCargoTransferSelectionFocus(string target)
+        {
+            if (Ui == null)
+                return;
+            bool dest = string.Equals(target, "DEST", StringComparison.Ordinal);
+            Ui.CargoRightPanelMode = "TRANSFER";
+            Ui.CargoTransferMixViewTarget = dest ? "DEST" : "SOURCE";
+            Ui.CargoTransferSelectionActive = (Ui.CargoTransferSourceItems != null && Ui.CargoTransferSourceItems.Count > 0) ||
+                (Ui.CargoTransferDestItems != null && Ui.CargoTransferDestItems.Count > 0);
+        }
+
+        void DeactivateCargoTransferSelectionFocus()
+        {
+            if (Ui == null)
+                return;
+            Ui.CargoTransferSelectionActive = false;
+            Ui.CargoTransferCaptureTarget = string.Empty;
+            Ui.CargoTransferCaptureUntilTick = 0;
+        }
+
+        bool HandleCargoLoadSendButton()
+        {
+            if (Ui == null)
+                return false;
+
+            string captureTarget = Ui.CargoTransferCaptureTarget;
+            if (string.Equals(captureTarget, "SOURCE", StringComparison.Ordinal) || string.Equals(captureTarget, "DEST", StringComparison.Ordinal))
+            {
+                if (Ui.CargoBlockCursorActiveUntilTick >= _currentTick || (Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex && (Ui.SelectedBlockStackItems == null || Ui.SelectedBlockStackItems.Count == 0)))
+                    SelectCargoInfoBlockBar(Ui.CargoBlockCursorIndex);
+                CaptureSelectedBlockStackForTransferTarget(captureTarget);
+                Ui.CargoRightPanelMode = "TRANSFER";
+                ActivateCargoTransferSelectionFocus(captureTarget);
+                return true;
+            }
+
+            int selectedGroup = GetSelectedManualGroupIndex();
+            if ((selectedGroup == 1 || selectedGroup == 2) && Ui.CargoBlockCursorActiveUntilTick >= _currentTick)
+            {
+                var summary = Ui.CachedCargoLoadSummary;
+                int index = Ui.CargoBlockScrollIndex + Ui.CargoBlockCursorIndex;
+                if (summary == null || summary.Blocks == null || index < 0 || index >= summary.Blocks.Count)
+                    return false;
+                var block = summary.Blocks[index] != null ? summary.Blocks[index].Block : null;
+                if (block == null)
+                    return false;
+                bool added = AddManualBlockSelectionItem(new BlockStackItem
+                {
+                    Id = "cargo:block:" + block.EntityId.ToString(),
+                    Name = ReadableBlockName(block),
+                    Block = block,
+                    Projected = new Vector2I(0, 0),
+                    Depth = index
+                }, selectedGroup);
+                if (added)
+                    ActivateManualBlockGroup(selectedGroup);
+                return added;
+            }
+
+            return false;
+        }
+        string BuildCurrentSelectionTransferLabel()
+        {
+            if (Ui == null)
+                return string.Empty;
+            if (Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex)
+                return "ALL";
+            int groupIndex = GetSelectedManualGroupIndex();
+            if (groupIndex == 1)
+                return "GROUPA";
+            if (groupIndex == 2)
+                return "GROUPB";
+            if (Ui.SelectedBlockStackItems != null && Ui.SelectedBlockStackItems.Count > 1 && Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex)
+                return "STACK";
+            if (Ui.SelectedBlockStackItems != null && Ui.SelectedBlockStackItems.Count == 1 && Ui.SelectedBlockStackItems[0] != null)
+                return string.Empty;
+            return string.Empty;
+        }
+        void CaptureSelectedBlockStackForTransferTarget(string target)
+        {
+            if (Ui == null)
+                return;
+            bool destTarget = string.Equals(target, "DEST", StringComparison.Ordinal);
+            var destination = destTarget ? Ui.CargoTransferDestItems : Ui.CargoTransferSourceItems;
+            string transferLabel = BuildCurrentSelectionTransferLabel();
+            destination.Clear();
+            if (Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex)
+            {
+                AddAllCargoBlocksToTransferSelection(destination);
+            }
+            else if (Ui.SelectedBlockStackItems != null && Ui.SelectedBlockStackItems.Count > 0)
+            {
+                if (Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex)
+                {
+                    for (int i = 0; i < Ui.SelectedBlockStackItems.Count; i++)
+                        AddTransferSelectionItem(destination, Ui.SelectedBlockStackItems[i]);
+                }
+                else if (Ui.SelectedBlockStackIndex >= 0 && Ui.SelectedBlockStackIndex < Ui.SelectedBlockStackItems.Count)
+                {
+                    AddTransferSelectionItem(destination, Ui.SelectedBlockStackItems[Ui.SelectedBlockStackIndex]);
+                }
+            }
+            if (destTarget)
+                Ui.CargoTransferDestLabel = transferLabel;
+            else
+                Ui.CargoTransferSourceLabel = transferLabel;
+            bool sourceChanged = string.Equals(target, "SOURCE", StringComparison.Ordinal);
+            if (sourceChanged)
+            {
+                Ui.CargoTransferQuotaItems.Clear();
+                Ui.CargoMixSelectedItemKeys.Clear();
+                Ui.CargoTransferQuotaScrollIndex = 0;
+            }
+            Ui.CargoTransferCaptureTarget = string.Empty;
+            Ui.CargoTransferCaptureUntilTick = 0;
+            SetCargoTransferMixView(target);
+        }
+
+        void AddAllCargoBlocksToTransferSelection(List<BlockStackItem> destination)
+        {
+            var summary = Ui != null ? Ui.CachedCargoLoadSummary : null;
+            if (summary == null || summary.Blocks == null)
+                return;
+            for (int i = 0; i < summary.Blocks.Count; i++)
+            {
+                var block = summary.Blocks[i] != null ? summary.Blocks[i].Block : null;
+                if (block == null)
+                    continue;
+                AddTransferSelectionItem(destination, new BlockStackItem
+                {
+                    Id = "cargo:block:" + block.EntityId.ToString(),
+                    Name = ReadableBlockName(block),
+                    Block = block,
+                    Projected = new Vector2I(0, 0),
+                    Depth = i
+                });
+            }
+        }
+
+        void AddTransferSelectionItem(List<BlockStackItem> destination, BlockStackItem item)
+        {
+            if (destination == null || item == null || item.Block == null)
+                return;
+            long id = item.Block.EntityId;
+            for (int i = 0; i < destination.Count; i++)
+            {
+                var existing = destination[i];
+                if (existing != null && existing.Block != null && existing.Block.EntityId == id)
+                    return;
+            }
+            destination.Add(new BlockStackItem
+            {
+                Id = item.Id,
+                Name = item.Name,
+                Block = item.Block,
+                Projected = item.Projected,
+                Depth = item.Depth
+            });
+        }
+
+        List<RenderEngine.CargoPanelItem> BuildCurrentCargoMixRows()
+        {
+            var rows = new List<RenderEngine.CargoPanelItem>();
+            var summary = Ui != null ? Ui.CachedCargoSummary : null;
+            if (summary == null || summary.TopItems == null)
+                return rows;
+            string filter = Ui != null ? NormalizeCargoInfoSelector(Ui.CargoInfoFilter) : "ALL";
+            if (filter == "ALL")
+            {
+                AddCargoCategoryRowsForInput(summary, rows);
+            }
+            else
+            {
+                for (int i = 0; i < summary.TopItems.Count; i++)
+                {
+                    var item = summary.TopItems[i];
+                    if (item == null)
+                        continue;
+                    string category = NormalizeCargoInfoSelector(item.Category);
+                    if (string.Equals(category, filter, StringComparison.Ordinal))
+                        rows.Add(item);
+                }
+            }
+            ApplyCargoMixSortForInput(rows);
+            return rows;
+        }
+
+        void AddCargoCategoryRowsForInput(RenderEngine.CargoPanelSummary summary, List<RenderEngine.CargoPanelItem> rows)
+        {
+            if (summary == null || rows == null)
+                return;
+            string[] categories = new[] { "ORE", "INGOT", "COMP", "TOOLS", "CONSUMABLE", "OTHER" };
+            for (int i = 0; i < categories.Length; i++)
+            {
+                string category = categories[i];
+                float volume = GetCargoCategoryVolumeForInput(summary, category);
+                if (volume <= 0f)
+                    continue;
+                float amount = 0f;
+                float mass = 0f;
+                for (int j = 0; j < summary.TopItems.Count; j++)
+                {
+                    var item = summary.TopItems[j];
+                    if (item == null || !string.Equals(NormalizeCargoInfoSelector(item.Category), category, StringComparison.Ordinal))
+                        continue;
+                    amount += item.Amount;
+                    mass += item.Mass;
+                }
+                rows.Add(new RenderEngine.CargoPanelItem
+                {
+                    Key = "category/" + category,
+                    Name = CargoCategoryRowLabelForInput(category),
+                    Category = category,
+                    TypeId = "Category",
+                    SubtypeId = category,
+                    Amount = amount,
+                    Volume = volume,
+                    Mass = mass
+                });
+            }
+        }
+
+        float GetCargoCategoryVolumeForInput(RenderEngine.CargoPanelSummary summary, string category)
+        {
+            if (summary == null || summary.CategoryVolumes == null)
+                return 0f;
+            float value;
+            if (summary.CategoryVolumes.TryGetValue(NormalizeCargoInfoSelector(category), out value))
+                return value;
+            return 0f;
+        }
+
+        string CargoCategoryRowLabelForInput(string category)
+        {
+            category = NormalizeCargoInfoSelector(category);
+            if (category == "ORE") return "ORES";
+            if (category == "INGOT") return "INGOTS";
+            if (category == "COMP") return "COMP.";
+            if (category == "CONSUMABLE") return "CONSUM.";
+            if (category == "TOOLS") return "TOOLS";
+            return "OTHER";
+        }
+        void ApplyCargoMixSortForInput(List<RenderEngine.CargoPanelItem> rows)
+        {
+            if (rows == null || Ui == null)
+                return;
+            string key = string.IsNullOrEmpty(Ui.CargoMixSortKey) ? "QUANT" : Ui.CargoMixSortKey;
+            int direction = Ui.CargoMixSortDirection == 2 ? 2 : 1;
+            rows.Sort(delegate(RenderEngine.CargoPanelItem a, RenderEngine.CargoPanelItem b)
+            {
+                int result = CompareCargoMixItemsForInput(a, b, key);
+                return direction == 2 ? -result : result;
+            });
+        }
+
+        int CompareCargoMixItemsForInput(RenderEngine.CargoPanelItem a, RenderEngine.CargoPanelItem b, string key)
+        {
+            if (a == null && b == null) return 0;
+            if (a == null) return 1;
+            if (b == null) return -1;
+            key = key ?? string.Empty;
+            if (key == "ITEM")
+                return string.Compare(a.Name ?? string.Empty, b.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+            float aValue = key == "MASS" ? a.Mass : key == "QUANT" ? a.Amount : a.Volume;
+            float bValue = key == "MASS" ? b.Mass : key == "QUANT" ? b.Amount : b.Volume;
+            int valueCompare = bValue.CompareTo(aValue);
+            if (valueCompare != 0)
+                return valueCompare;
+            return string.Compare(a.Name ?? string.Empty, b.Name ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
+        void ToggleCargoMixRowSelection(int row)
+        {
+            if (Ui == null || row < 0)
+                return;
+            var rows = BuildCurrentCargoMixRows();
+            int index = Ui.CargoMixScrollIndex + row;
+            if (index < 0 || index >= rows.Count)
+                return;
+            string key = CargoPanelItemKey(rows[index]);
+            if (string.IsNullOrEmpty(key))
+                return;
+            int existing = Ui.CargoMixSelectedItemKeys.IndexOf(key);
+            if (existing >= 0)
+                Ui.CargoMixSelectedItemKeys.RemoveAt(existing);
+            else
+                Ui.CargoMixSelectedItemKeys.Add(key);
+        }
+
+        void AddCargoMixRowToTransferQuota(int row)
+        {
+            if (Ui == null)
+                return;
+            if (!string.Equals(Ui.CargoTransferMixViewTarget ?? "SOURCE", GetCargoTransferActiveSourceTarget(), StringComparison.Ordinal))
+                return;
+            var rows = BuildCurrentCargoMixRows();
+            int index = Ui.CargoMixScrollIndex + row;
+            if (index < 0 || index >= rows.Count)
+                return;
+            AddOrUpdateTransferQuotaItem(rows[index]);
+            Ui.CargoRightPanelMode = "TRANSFER";
+            ActivateCargoTransferSelectionFocus(GetCargoTransferActiveSourceTarget());
+        }
+        void AddCargoMixSelectionToTransferQuota()
+        {
+            if (Ui == null)
+                return;
+            if (!string.Equals(Ui.CargoTransferMixViewTarget ?? "SOURCE", GetCargoTransferActiveSourceTarget(), StringComparison.Ordinal))
+                return;
+            var rows = BuildCurrentCargoMixRows();
+            bool useSelection = Ui.CargoMixSelectedItemKeys.Count > 0;
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var item = rows[i];
+                string key = CargoPanelItemKey(item);
+                if (string.IsNullOrEmpty(key))
+                    continue;
+                if (useSelection && Ui.CargoMixSelectedItemKeys.IndexOf(key) < 0)
+                    continue;
+                AddOrUpdateTransferQuotaItem(item);
+            }
+            Ui.CargoMixSelectedItemKeys.Clear();
+            Ui.CargoRightPanelMode = "TRANSFER";
+            ActivateCargoTransferSelectionFocus(GetCargoTransferActiveSourceTarget());
+        }
+
+        void AddOrUpdateTransferQuotaItem(RenderEngine.CargoPanelItem item)
+        {
+            if (Ui == null || item == null)
+                return;
+            string key = CargoPanelItemKey(item);
+            if (string.IsNullOrEmpty(key))
+                return;
+            for (int i = 0; i < Ui.CargoTransferQuotaItems.Count; i++)
+            {
+                var existing = Ui.CargoTransferQuotaItems[i];
+                if (existing != null && string.Equals(existing.Key, key, StringComparison.Ordinal))
+                {
+                    existing.MaxAmount = Math.Max(existing.MaxAmount, item.Amount > 0f ? item.Amount : item.Volume);
+                    existing.Amount = Math.Min(existing.MaxAmount, Math.Max(existing.Amount, item.Amount > 0f ? item.Amount : item.Volume));
+                    existing.Volume = Math.Max(existing.Volume, item.Volume);
+                    return;
+                }
+            }
+            Ui.CargoTransferQuotaItems.Add(new CargoTransferQuotaItem
+            {
+                Key = key,
+                Name = item.Name,
+                Category = item.Category,
+                TypeId = item.TypeId,
+                SubtypeId = item.SubtypeId,
+                Amount = item.Amount > 0f ? item.Amount : item.Volume,
+                Volume = item.Volume,
+                MaxAmount = item.Amount > 0f ? item.Amount : item.Volume
+            });
+        }
+
+        string CargoPanelItemKey(RenderEngine.CargoPanelItem item)
+        {
+            if (item == null)
+                return string.Empty;
+            if (!string.IsNullOrEmpty(item.Key))
+                return item.Key;
+            return (item.TypeId ?? string.Empty) + "/" + (item.SubtypeId ?? item.Name ?? string.Empty);
+        }
+
+        void HandleCargoTransferQuotaPress(string payload)
+        {
+            if (Ui == null || string.IsNullOrEmpty(payload))
+                return;
+            string[] parts = payload.Split(':');
+            int row;
+            if (parts.Length < 2 || !int.TryParse(parts[0], out row))
+                return;
+            int index = Ui.CargoTransferQuotaScrollIndex + row;
+            if (index < 0 || index >= Ui.CargoTransferQuotaItems.Count)
+                return;
+            var item = Ui.CargoTransferQuotaItems[index];
+            string action = parts[1];
+            if ((string.Equals(action, "row", StringComparison.Ordinal) && IsControlHeld()) || string.Equals(action, "remove", StringComparison.Ordinal))
+            {
+                Ui.CargoTransferQuotaItems.RemoveAt(index);
+                return;
+            }
+            float step = CargoTransferQuotaStep(item != null ? item.Amount : 0f);
+            if (string.Equals(action, "up", StringComparison.Ordinal))
+                item.Amount = Math.Min(item.MaxAmount > 0f ? item.MaxAmount : item.Amount + step, item.Amount + step);
+            else if (string.Equals(action, "down", StringComparison.Ordinal))
+                item.Amount = Math.Max(0f, item.Amount - step);
+            if (item.Amount <= 0f)
+                Ui.CargoTransferQuotaItems.RemoveAt(index);
+        }
+
+        float CargoTransferQuotaStep(float amount)
+        {
+            if (amount >= 100000f)
+                return Math.Max(1000f, (float)Math.Round(amount * 0.10f));
+            if (amount >= 10000f)
+                return 1000f;
+            if (amount >= 1000f)
+                return 100f;
+            if (amount >= 100f)
+                return 10f;
+            return 1f;
+        }
+
+        void ExecuteCargoTransferQuota()
+        {
+            if (Ui == null || Ui.CargoTransferQuotaItems.Count == 0)
+                return;
+            var fromItems = Ui.CargoTransferDirectionReversed ? Ui.CargoTransferDestItems : Ui.CargoTransferSourceItems;
+            var toItems = Ui.CargoTransferDirectionReversed ? Ui.CargoTransferSourceItems : Ui.CargoTransferDestItems;
+            if (fromItems == null || toItems == null || fromItems.Count == 0 || toItems.Count == 0)
+                return;
+
+            var sourceInventories = CollectTransferInventories(fromItems);
+            var destinationInventories = CollectTransferInventories(toItems);
+            if (sourceInventories.Count == 0 || destinationInventories.Count == 0)
+                return;
+
+            for (int q = 0; q < Ui.CargoTransferQuotaItems.Count; q++)
+            {
+                var quota = Ui.CargoTransferQuotaItems[q];
+                if (quota == null || quota.Amount <= 0f)
+                    continue;
+                float remaining = quota.Amount;
+                for (int s = 0; s < sourceInventories.Count && remaining > 0f; s++)
+                {
+                    var source = sourceInventories[s];
+                    var items = new List<VRage.Game.ModAPI.Ingame.MyInventoryItem>();
+                    try { source.GetItems(items); } catch { continue; }
+                    for (int itemIndex = 0; itemIndex < items.Count && remaining > 0f; itemIndex++)
+                    {
+                        var sourceItem = items[itemIndex];
+                        if (!CargoInventoryItemMatchesQuota(sourceItem, quota))
+                            continue;
+                        float available = (float)sourceItem.Amount;
+                        if (available <= 0f)
+                            continue;
+                        float requested = Math.Min(available, remaining);
+                        for (int d = 0; d < destinationInventories.Count && requested > 0f; d++)
+                        {
+                            var destination = destinationInventories[d];
+                            MyFixedPoint moveAmount = (MyFixedPoint)requested;
+                            bool moved = false;
+                            try
+                            {
+                                moved = source.TransferItemTo(destination, sourceItem, moveAmount);
+                            }
+                            catch
+                            {
+                                moved = false;
+                            }
+                            if (moved)
+                            {
+                                remaining -= requested;
+                                requested = 0f;
+                            }
+                        }
+                    }
+                }
+                quota.Amount = Math.Max(0f, remaining);
+            }
+
+            for (int i = Ui.CargoTransferQuotaItems.Count - 1; i >= 0; i--)
+            {
+                var item = Ui.CargoTransferQuotaItems[i];
+                if (item == null || item.Amount <= 0f)
+                    Ui.CargoTransferQuotaItems.RemoveAt(i);
+            }
+            Ui.CachedCargoSummaryKey = string.Empty;
+            Ui.CachedCargoLoadSummaryKey = string.Empty;
+        }
+
+        List<VRage.Game.ModAPI.Ingame.IMyInventory> CollectTransferInventories(List<BlockStackItem> items)
+        {
+            var result = new List<VRage.Game.ModAPI.Ingame.IMyInventory>();
+            if (items == null)
+                return result;
+            for (int i = 0; i < items.Count; i++)
+            {
+                var block = items[i] != null ? items[i].Block : null;
+                if (block == null)
+                    continue;
+                int count = 0;
+                try { count = block.InventoryCount; } catch { count = 0; }
+                for (int inv = 0; inv < count; inv++)
+                {
+                    var inventory = block.GetInventory(inv);
+                    if (inventory != null)
+                        result.Add(inventory);
+                }
+            }
+            return result;
+        }
+
+        bool CargoInventoryItemMatchesQuota(VRage.Game.ModAPI.Ingame.MyInventoryItem item, CargoTransferQuotaItem quota)
+        {
+            if (quota == null)
+                return false;
+            string typeId = item.Type.TypeId;
+            string subtypeId = item.Type.SubtypeId;
+            return string.Equals(typeId, quota.TypeId ?? string.Empty, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(subtypeId, quota.SubtypeId ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+        bool HasManualBlockSelection()
+        {
+            return GetManualBlockGroupCount() > 0;
+        }
+
+        int GetManualBlockGroupCount()
+        {
+            if (Ui == null)
+                return 0;
+            if (Ui.ManualGroup2Enabled)
+                return 2;
+            return Ui.ManualSelectedBlockItems != null && Ui.ManualSelectedBlockItems.Count > 0 ? 1 : 0;
+        }
+
+        List<BlockStackItem> GetManualBlockGroupItems(int groupIndex)
+        {
+            if (Ui == null)
+                return null;
+            return groupIndex == 2 ? Ui.ManualSelectedBlockItems2 : Ui.ManualSelectedBlockItems;
+        }
+
+        string ManualGroupSignature(int groupIndex)
+        {
+            return "manual:group:" + (groupIndex == 2 ? "2" : "1");
+        }
+
+        int GetSelectedManualGroupIndex()
+        {
+            if (Ui == null || string.IsNullOrEmpty(Ui.SelectedBlockStackSignature))
+                return 0;
+            if (string.Equals(Ui.SelectedBlockStackSignature, "manual:selection", StringComparison.Ordinal) ||
+                string.Equals(Ui.SelectedBlockStackSignature, ManualGroupSignature(1), StringComparison.Ordinal))
+                return 1;
+            if (string.Equals(Ui.SelectedBlockStackSignature, ManualGroupSignature(2), StringComparison.Ordinal))
+                return 2;
+            return 0;
+        }
+
+        bool IsSelectedBlockStackManual()
+        {
+            return GetSelectedManualGroupIndex() > 0;
+        }
+
+        int GetActiveManualGroupIndex()
+        {
+            if (Ui == null)
+                return 1;
+            if (Ui.ActiveManualGroupIndex == 2 && Ui.ManualGroup2Enabled)
+                return 2;
+            if (Ui.ActiveManualGroupIndex == 1 && HasManualBlockSelection())
+                return 1;
+            if (Ui.ManualGroup2Enabled)
+                return 2;
+            return 1;
+        }
+
+        BlockStackItem CloneBlockStackItem(BlockStackItem item)
+        {
+            if (item == null)
+                return null;
+            return new BlockStackItem
+            {
+                Id = item.Id,
+                Name = item.Name,
+                Block = item.Block,
+                Projected = item.Projected,
+                Depth = item.Depth
+            };
+        }
+
+        long GetBlockStackItemEntityId(BlockStackItem item)
+        {
+            if (item == null || item.Block == null)
+                return 0L;
+            try
+            {
+                return item.Block.EntityId;
+            }
+            catch
+            {
+                return 0L;
+            }
+        }
+
+        bool ManualBlockGroupContainsEntityId(int groupIndex, long id)
+        {
+            if (id == 0L)
+                return false;
+            var items = GetManualBlockGroupItems(groupIndex);
+            if (items == null)
+                return false;
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (GetBlockStackItemEntityId(items[i]) == id)
+                    return true;
+            }
+            return false;
+        }
+        void ActivateManualBlockSelection()
+        {
+            ActivateManualBlockGroup(GetActiveManualGroupIndex());
+        }
+
+        void ActivateManualBlockGroup(int groupIndex)
+        {
+            if (Ui == null)
+                return;
+            if (groupIndex == 2)
+                Ui.ManualGroup2Enabled = true;
+            if (groupIndex != 2)
+                groupIndex = 1;
+
+            var items = GetManualBlockGroupItems(groupIndex);
+            ClearSelectedBlockStack();
+            if (items != null)
+            {
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var clone = CloneBlockStackItem(items[i]);
+                    if (clone != null)
+                        Ui.SelectedBlockStackItems.Add(clone);
+                }
+            }
+            Ui.ActiveManualGroupIndex = groupIndex;
+            Ui.SelectedBlockStackSignature = ManualGroupSignature(groupIndex);
+            Ui.SelectedBlockStackIndex = Ui.SelectedBlockStackItems.Count > 1 ? UiState.SelectedBlockStackAggregateIndex : Ui.SelectedBlockStackItems.Count == 1 ? 0 : UiState.SelectedBlockStackAggregateIndex;
+            Ui.SelectedBlockStackScrollIndex = 0;
+            Ui.SelectedOverlayBlockId = null;
+            Ui.SelectedOverlayLineIndex = 0;
+            Ui.ShowInfoPanel = SupportsInfoPanel;
+            Ui.InfoPanelMode = InfoPanelMode.Systems;
+            Ui.ActiveMenu = MenuPanel.None;
+        }
+
+        bool AddManualBlockSelectionItem(BlockStackItem item)
+        {
+            return AddManualBlockSelectionItem(item, GetActiveManualGroupIndex());
+        }
+
+        bool AddManualBlockSelectionItem(BlockStackItem item, int groupIndex)
+        {
+            if (Ui == null || item == null || item.Block == null)
+                return false;
+            if (groupIndex == 2)
+                Ui.ManualGroup2Enabled = true;
+            else
+                groupIndex = 1;
+
+            long id = GetBlockStackItemEntityId(item);
+            if (id == 0L)
+                return false;
+
+            if (ManualBlockGroupContainsEntityId(groupIndex == 2 ? 1 : 2, id))
+                return false;
+            var items = GetManualBlockGroupItems(groupIndex);
+            if (items == null)
+                return false;
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (GetBlockStackItemEntityId(items[i]) == id)
+                    return false;
+            }
+            items.Add(CloneBlockStackItem(item));
+            Ui.ActiveManualGroupIndex = groupIndex;
+            return true;
+        }
+
+        bool RemoveManualBlockSelectionItem(BlockStackItem item)
+        {
+            return RemoveManualBlockSelectionItemFromGroup(item, GetActiveManualGroupIndex(), true);
+        }
+
+        bool RemoveManualBlockSelectionItemFromGroup(BlockStackItem item, int groupIndex, bool refresh)
+        {
+            if (Ui == null || item == null)
+                return false;
+            var items = GetManualBlockGroupItems(groupIndex);
+            if (items == null)
+                return false;
+            long id = GetBlockStackItemEntityId(item);
+            for (int i = items.Count - 1; i >= 0; i--)
+            {
+                var existing = items[i];
+                bool match = id != 0L ? GetBlockStackItemEntityId(existing) == id : string.Equals(existing != null ? existing.Id : string.Empty, item.Id ?? string.Empty, StringComparison.Ordinal);
+                if (!match)
+                    continue;
+                items.RemoveAt(i);
+                if (refresh)
+                {
+                    NormalizeManualGroupsAfterEdit();
+                    if (IsSelectedBlockStackManual())
+                    {
+                        int selectedGroup = GetSelectedManualGroupIndex();
+                        if (selectedGroup > 0 && GetManualBlockGroupCount() > 0)
+                            ActivateManualBlockGroup(selectedGroup);
+                        else
+                            ClearSelectedBlockStack();
+                    }
+                }
+                return true;
+            }
+            return false;
+        }
+
+        void NormalizeManualGroupsAfterEdit()
+        {
+            if (Ui == null)
+                return;
+            if (Ui.ManualGroup2Enabled && Ui.ManualSelectedBlockItems.Count == 0 && Ui.ManualSelectedBlockItems2.Count > 0)
+            {
+                Ui.ManualSelectedBlockItems.Clear();
+                for (int i = 0; i < Ui.ManualSelectedBlockItems2.Count; i++)
+                    Ui.ManualSelectedBlockItems.Add(CloneBlockStackItem(Ui.ManualSelectedBlockItems2[i]));
+                Ui.ManualSelectedBlockItems2.Clear();
+                Ui.ManualGroup2Enabled = false;
+                Ui.ActiveManualGroupIndex = 1;
+            }
+            if (!Ui.ManualGroup2Enabled && Ui.ManualSelectedBlockItems.Count == 0)
+                Ui.ActiveManualGroupIndex = 0;
+            else if (Ui.ActiveManualGroupIndex <= 0)
+                Ui.ActiveManualGroupIndex = 1;
+        }
+
+        void ClearManualBlockSelection()
+        {
+            ClearManualBlockGroup(GetActiveManualGroupIndex());
+        }
+
+        void ClearManualBlockGroup(int groupIndex)
+        {
+            if (Ui == null)
+                return;
+            int selectedGroup = GetSelectedManualGroupIndex();
+            if (groupIndex == 2)
+            {
+                Ui.ManualSelectedBlockItems2.Clear();
+                Ui.ManualGroup2Enabled = false;
+                if (Ui.ActiveManualGroupIndex == 2)
+                    Ui.ActiveManualGroupIndex = Ui.ManualSelectedBlockItems.Count > 0 ? 1 : 0;
+            }
+            else
+            {
+                Ui.ManualSelectedBlockItems.Clear();
+                if (Ui.ManualGroup2Enabled)
+                {
+                    for (int i = 0; i < Ui.ManualSelectedBlockItems2.Count; i++)
+                        Ui.ManualSelectedBlockItems.Add(CloneBlockStackItem(Ui.ManualSelectedBlockItems2[i]));
+                    Ui.ManualSelectedBlockItems2.Clear();
+                    Ui.ManualGroup2Enabled = false;
+                    Ui.ActiveManualGroupIndex = Ui.ManualSelectedBlockItems.Count > 0 ? 1 : 0;
+                }
+                else
+                {
+                    Ui.ActiveManualGroupIndex = 0;
+                }
+            }
+
+            NormalizeManualGroupsAfterEdit();
+            if (selectedGroup > 0)
+            {
+                if (GetManualBlockGroupCount() > 0)
+                    ActivateManualBlockGroup(GetActiveManualGroupIndex());
+                else
+                    ClearSelectedBlockStack();
+            }
+        }
+
+        BlockStackItem GetPreviewBlockSelectionItem()
+        {
+            if (Ui == null || Ui.PreviewBlockStackItems == null || Ui.PreviewBlockStackItems.Count == 0)
+                return null;
+            int index = Ui.PreviewBlockStackIndex;
+            if (index < 0)
+                index = 0;
+            if (index >= Ui.PreviewBlockStackItems.Count)
+                index = Ui.PreviewBlockStackItems.Count - 1;
+            return Ui.PreviewBlockStackItems[index];
+        }
+
+        void SeedManualSelectionFromCurrentStack(int groupIndex)
+        {
+            if (Ui == null || HasManualBlockSelection() || Ui.SelectedBlockStackItems == null || Ui.SelectedBlockStackItems.Count == 0)
+                return;
+            if (Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex)
+                return;
+
+            if (Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex)
+            {
+                for (int i = 0; i < Ui.SelectedBlockStackItems.Count; i++)
+                    AddManualBlockSelectionItem(Ui.SelectedBlockStackItems[i], groupIndex);
+                return;
+            }
+
+            int index = Ui.SelectedBlockStackIndex;
+            if (index < 0)
+                index = 0;
+            if (index >= Ui.SelectedBlockStackItems.Count)
+                index = Ui.SelectedBlockStackItems.Count - 1;
+            AddManualBlockSelectionItem(Ui.SelectedBlockStackItems[index], groupIndex);
+        }
+
+        bool AddPreviewBlockToManualSelection()
+        {
+            if (Ui == null)
+                return false;
+            int groupIndex = HasManualBlockSelection() ? GetActiveManualGroupIndex() : 1;
+            SeedManualSelectionFromCurrentStack(groupIndex);
+            bool added = false;
+            if (Ui.PreviewBlockStackItems != null && Ui.PreviewBlockStackItems.Count > 0)
+            {
+                for (int i = 0; i < Ui.PreviewBlockStackItems.Count; i++)
+                    added = AddManualBlockSelectionItem(Ui.PreviewBlockStackItems[i], groupIndex) || added;
+            }
+            else
+            {
+                added = AddManualBlockSelectionItem(GetPreviewBlockSelectionItem(), groupIndex);
+            }
+            if (!added && !HasManualBlockSelection())
+                return false;
+            ActivateManualBlockGroup(groupIndex);
+            DeactivateCargoTransferSelectionFocus();
+            return true;
+        }
+
+        bool RemovePreviewBlockFromManualSelection()
+        {
+            if (Ui == null)
+                return false;
+            bool removed = false;
+            if (Ui.PreviewBlockStackItems != null && Ui.PreviewBlockStackItems.Count > 0)
+            {
+                for (int i = 0; i < Ui.PreviewBlockStackItems.Count; i++)
+                    removed = RemoveManualBlockSelectionItemFromGroup(Ui.PreviewBlockStackItems[i], GetActiveManualGroupIndex(), false) || removed;
+                if (removed)
+                {
+                    NormalizeManualGroupsAfterEdit();
+                    if (IsSelectedBlockStackManual())
+                        ActivateManualBlockGroup(GetActiveManualGroupIndex());
+                    DeactivateCargoTransferSelectionFocus();
+                }
+                return removed;
+            }
+            bool removedSingle = RemoveManualBlockSelectionItem(GetPreviewBlockSelectionItem());
+            if (removedSingle)
+                DeactivateCargoTransferSelectionFocus();
+            return removedSingle;
+        }
+
+        bool ConvertCurrentStackToManualSelectionExcluding(int removeIndex)
+        {
+            if (Ui == null || Ui.SelectedBlockStackItems == null || Ui.SelectedBlockStackItems.Count == 0)
+                return false;
+            Ui.ManualSelectedBlockItems.Clear();
+            Ui.ManualSelectedBlockItems2.Clear();
+            Ui.ManualGroup2Enabled = false;
+            Ui.ActiveManualGroupIndex = 1;
+            for (int i = 0; i < Ui.SelectedBlockStackItems.Count; i++)
+            {
+                if (i == removeIndex)
+                    continue;
+                AddManualBlockSelectionItem(Ui.SelectedBlockStackItems[i], 1);
+            }
+            if (!HasManualBlockSelection())
+            {
+                ClearSelectedBlockStack();
+                return true;
+            }
+            ActivateManualBlockGroup(1);
+            return true;
+        }
         bool HandleInfoPanelBlockTabPress(string regionId)
         {
             if (string.IsNullOrEmpty(regionId))
                 return false;
 
             int index;
+            bool stackTab = false;
+            int groupTabIndex = 0;
             if (string.Equals(regionId, UiLayout.InfoPanelAllTabId, StringComparison.Ordinal))
             {
                 index = UiState.SelectedBlockStackAllIndex;
             }
             else if (string.Equals(regionId, UiLayout.InfoPanelStackTabId, StringComparison.Ordinal))
             {
+                stackTab = true;
+                groupTabIndex = 1;
+                index = UiState.SelectedBlockStackAggregateIndex;
+            }
+            else if (string.Equals(regionId, UiLayout.InfoPanelGroup2TabId, StringComparison.Ordinal))
+            {
+                stackTab = true;
+                groupTabIndex = 2;
                 index = UiState.SelectedBlockStackAggregateIndex;
             }
             else
@@ -1776,12 +3165,68 @@ namespace GridSchematics
                     return true;
             }
 
+            if (stackTab && HasManualBlockSelection())
+            {
+                if (groupTabIndex <= 0)
+                    groupTabIndex = 1;
+                if (IsShiftHeld() && groupTabIndex == 1 && GetManualBlockGroupCount() == 1)
+                {
+                    Ui.ManualGroup2Enabled = true;
+                    Ui.ActiveManualGroupIndex = 2;
+                    ActivateManualBlockGroup(2);
+                }
+                else if (IsControlHeld())
+                {
+                    ClearManualBlockGroup(groupTabIndex);
+                }
+                else
+                {
+                    ActivateManualBlockGroup(groupTabIndex);
+                }
+                if (!string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget))
+                    CaptureSelectedBlockStackForTransferTarget(Ui.CargoTransferCaptureTarget);
+                else
+                    DeactivateCargoTransferSelectionFocus();
+                _hasLastMouseWheelValue = false;
+                _renderDirty = true;
+                return true;
+            }
+
+            if (index == UiState.SelectedBlockStackAllIndex)
+            {
+                ClearSelectedBlockStack();
+                Ui.SelectedOverlayBlockId = null;
+                Ui.SelectedOverlayLineIndex = 0;
+                Ui.ShowInfoPanel = SupportsInfoPanel;
+                Ui.InfoPanelMode = InfoPanelMode.Systems;
+                Ui.ActiveMenu = MenuPanel.None;
+                _hasLastMouseWheelValue = false;
+                if (!string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget))
+                    CaptureSelectedBlockStackForTransferTarget(Ui.CargoTransferCaptureTarget);
+                else
+                    DeactivateCargoTransferSelectionFocus();
+                _renderDirty = true;
+                return true;
+            }
+
             if (Ui.SelectedBlockStackItems == null || Ui.SelectedBlockStackItems.Count == 0)
                 return true;
             if (index >= Ui.SelectedBlockStackItems.Count)
                 return true;
             if (index == UiState.SelectedBlockStackAggregateIndex && Ui.SelectedBlockStackItems.Count <= 1)
                 return true;
+
+            if (IsControlHeld() && index >= 0 && index < Ui.SelectedBlockStackItems.Count)
+            {
+                if (IsSelectedBlockStackManual())
+                    RemoveManualBlockSelectionItem(Ui.SelectedBlockStackItems[index]);
+                else
+                    ConvertCurrentStackToManualSelectionExcluding(index);
+                DeactivateCargoTransferSelectionFocus();
+                _hasLastMouseWheelValue = false;
+                _renderDirty = true;
+                return true;
+            }
 
             Ui.SelectedBlockStackIndex = index;
             Ui.SelectedOverlayBlockId = null;
@@ -1790,10 +3235,14 @@ namespace GridSchematics
             Ui.InfoPanelMode = InfoPanelMode.Systems;
             Ui.ActiveMenu = MenuPanel.None;
             _hasLastMouseWheelValue = false;
+            SyncCargoBlockCursorToSelectedSingleBlock();
+            if (!string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget))
+                CaptureSelectedBlockStackForTransferTarget(Ui.CargoTransferCaptureTarget);
+            else if (index == UiState.SelectedBlockStackAggregateIndex)
+                DeactivateCargoTransferSelectionFocus();
             _renderDirty = true;
             return true;
         }
-
         void CycleGridVisibility()
         {
             if (Ui.GridVisibilityLevel <= 0)
@@ -1882,6 +3331,20 @@ namespace GridSchematics
         {
             if (!IsOverlayBlockRegion(regionId))
                 return false;
+            if (!string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget))
+            {
+                Ui.SelectedOverlayBlockId = regionId;
+                Ui.SelectedOverlayLineIndex = 0;
+                if (!PopulateSelectedBlockStackFromPreview())
+                    PopulateSelectedBlockStackFromOverlayInfo(FindOverlayInfo(regionId));
+                Ui.ShowInfoPanel = SupportsInfoPanel;
+                Ui.InfoPanelMode = InfoPanelMode.Systems;
+                Ui.ActiveMenu = MenuPanel.None;
+                CaptureSelectedBlockStackForTransferTarget(Ui.CargoTransferCaptureTarget);
+                _hasLastMouseWheelValue = false;
+                _renderDirty = true;
+                return true;
+            }
 
             if (string.Equals(Ui.SelectedOverlayBlockId, regionId, StringComparison.Ordinal))
             {
@@ -1895,6 +3358,7 @@ namespace GridSchematics
                 Ui.SelectedOverlayLineIndex = 0;
                 if (!PopulateSelectedBlockStackFromPreview())
                     PopulateSelectedBlockStackFromOverlayInfo(FindOverlayInfo(regionId));
+                SyncCargoBlockCursorToSelectedSingleBlock();
                 Ui.ShowInfoPanel = SupportsInfoPanel;
                 Ui.InfoPanelMode = InfoPanelMode.Systems;
                 Ui.ActiveMenu = MenuPanel.None;
@@ -1966,8 +3430,26 @@ namespace GridSchematics
 
         bool IsUiBlockerRegion(string regionId)
         {
+            if (string.IsNullOrEmpty(regionId))
+                return false;
             return string.Equals(regionId, UiLayout.UiBlockerId, StringComparison.Ordinal) ||
-                string.Equals(regionId, UiLayout.InfoPanelBlockTabScrollId, StringComparison.Ordinal);
+                string.Equals(regionId, UiLayout.InfoPanelBlockTabScrollId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoActionScrollId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoBlockScrollId, StringComparison.Ordinal) ||
+                regionId.StartsWith(UiLayout.CargoInfoBlockPrefix, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoMixScrollId, StringComparison.Ordinal) ||
+                regionId.StartsWith(UiLayout.CargoInfoMixSortPrefix, StringComparison.Ordinal) ||
+                regionId.StartsWith(UiLayout.CargoInfoMixRowPrefix, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoMixAddToQuotaId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoSendBlockToTransferId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferModeId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoActionsModeId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferSourceSelectId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferDestSelectId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferDirectionId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferClearId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoTransferNowId, StringComparison.Ordinal) ||
+                regionId.StartsWith(UiLayout.CargoInfoTransferQuotaPrefix, StringComparison.Ordinal);
         }
 
         void ResetViewportCamera()
@@ -1992,6 +3474,12 @@ namespace GridSchematics
             {
                 _hasLastMouseWheelValue = false;
                 return false;
+            }
+            if (SupportsInfoPanel && Ui.ShowInfoPanel && Ui.InfoPanelMode == InfoPanelMode.Systems && Ui.ActiveOverlay == OverlayMode.Cargo)
+            {
+                var cursor = TouchInput.CursorPosition;
+                if (cursor.X >= 0f && cursor.X <= 512f && cursor.Y >= 328f && cursor.Y <= 496f)
+                    return false;
             }
 
             bool cursorInRenderArea = IsCursorInRenderArea();
@@ -2060,6 +3548,287 @@ namespace GridSchematics
             return true;
         }
 
+
+        bool UpdateCargoActionWheel()
+        {
+            if (!TouchInput.IsAvailable || !TouchInput.IsCursorOnScreen || MyAPIGateway.Input == null)
+                return false;
+            if (!SupportsInfoPanel || !Ui.ShowInfoPanel || Ui.InfoPanelMode != InfoPanelMode.Systems || Ui.ActiveOverlay != OverlayMode.Cargo)
+                return false;
+
+            string hover = TouchInput.HoverRegionId ?? string.Empty;
+            bool hoverActions = false;
+            bool hoverBlocks = false;
+            bool hoverMix = false;
+            var cursor = TouchInput.CursorPosition;
+            if (cursor.Y >= 328f && cursor.Y <= 496f)
+            {
+                if (cursor.X >= 0f && cursor.X < 168f)
+                    hoverBlocks = true;
+                else if (cursor.X >= 168f && cursor.X < 344f)
+                    hoverMix = true;
+                else if (cursor.X >= 344f && cursor.X <= 512f)
+                    hoverActions = true;
+            }
+            if (!hoverActions && !hoverBlocks && !hoverMix)
+            {
+                hoverActions = string.Equals(hover, UiLayout.CargoInfoActionScrollId, StringComparison.Ordinal) ||
+                    hover.StartsWith(UiLayout.CargoInfoActionPrefix, StringComparison.Ordinal);
+                hoverBlocks = string.Equals(hover, UiLayout.CargoInfoBlockScrollId, StringComparison.Ordinal) ||
+                    string.Equals(hover, UiLayout.CargoInfoFocusAllId, StringComparison.Ordinal) ||
+                    string.Equals(hover, UiLayout.CargoInfoFocusReachableId, StringComparison.Ordinal) ||
+                    string.Equals(hover, UiLayout.CargoInfoFocusIsolatedId, StringComparison.Ordinal) ||
+                    string.Equals(hover, UiLayout.CargoInfoFocusFullId, StringComparison.Ordinal) ||
+                    hover.StartsWith(UiLayout.CargoInfoBlockPrefix, StringComparison.Ordinal);
+                hoverMix = string.Equals(hover, UiLayout.CargoInfoMixScrollId, StringComparison.Ordinal) ||
+                    string.Equals(hover, UiLayout.CargoInfoFilterToggleId, StringComparison.Ordinal) ||
+                    hover.StartsWith(UiLayout.CargoInfoFilterPrefix, StringComparison.Ordinal) ||
+                    hover.StartsWith(UiLayout.CargoInfoMixSortPrefix, StringComparison.Ordinal);
+            }
+            if (!hoverActions && !hoverBlocks && !hoverMix)
+                return false;
+
+            int wheelValue;
+            try
+            {
+                wheelValue = MyAPIGateway.Input.MouseScrollWheelValue();
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (!_hasLastMouseWheelValue)
+            {
+                _lastMouseWheelValue = wheelValue;
+                _hasLastMouseWheelValue = true;
+                return false;
+            }
+
+            int delta = wheelValue - _lastMouseWheelValue;
+            _lastMouseWheelValue = wheelValue;
+            if (delta == 0)
+                return false;
+
+            if (hoverBlocks)
+            {
+                int direction = delta > 0 ? -1 : 1;
+                if (!UpdateCargoBlockCursorScroll(direction))
+                    return false;
+
+                TouchInput.MarkScrollActive();
+                return true;
+            }
+
+            if (hoverMix)
+            {
+                int mixNext = Ui.CargoMixScrollIndex + (delta > 0 ? -1 : 1);
+                if (mixNext < 0)
+                    mixNext = 0;
+                int mixMaxScroll = GetCachedCargoMixScrollMax();
+                if (mixNext > mixMaxScroll)
+                    mixNext = mixMaxScroll;
+                TouchInput.MarkScrollActive();
+                if (mixNext == Ui.CargoMixScrollIndex)
+                    return false;
+
+                Ui.CargoMixScrollIndex = mixNext;
+                return true;
+            }
+
+            if (string.Equals(Ui.CargoRightPanelMode, "TRANSFER", StringComparison.OrdinalIgnoreCase))
+            {
+                int quotaMaxScroll = Math.Max(0, Ui.CargoTransferQuotaItems.Count - 4);
+                int quotaNext = Ui.CargoTransferQuotaScrollIndex + (delta > 0 ? -1 : 1);
+                if (quotaNext < 0)
+                    quotaNext = 0;
+                if (quotaNext > quotaMaxScroll)
+                    quotaNext = quotaMaxScroll;
+                TouchInput.MarkScrollActive();
+                if (quotaNext == Ui.CargoTransferQuotaScrollIndex)
+                    return false;
+                Ui.CargoTransferQuotaScrollIndex = quotaNext;
+                return true;
+            }
+
+            var rows = BuildSelectedCargoActionRows();
+            int maxScroll = Math.Max(0, rows.Count - 9);
+            int next = Ui.CargoActionScrollIndex + (delta > 0 ? -1 : 1);
+            if (next < 0)
+                next = 0;
+            if (next > maxScroll)
+                next = maxScroll;
+            TouchInput.MarkScrollActive();
+            if (next == Ui.CargoActionScrollIndex)
+                return false;
+
+            Ui.CargoActionScrollIndex = next;
+            return true;
+        }
+
+
+        bool UpdateCargoBlockCursorScroll(int direction)
+        {
+            var summary = Ui != null ? Ui.CachedCargoLoadSummary : null;
+            int count = summary != null && summary.Blocks != null ? summary.Blocks.Count : 0;
+            if (count <= 0)
+                return false;
+
+            const int visible = 13;
+            const int centerLane = 6;
+            int maxFirst = Math.Max(0, count - visible);
+            int first = Ui.CargoBlockScrollIndex;
+            int cursor = Ui.CargoBlockCursorIndex;
+            if (first < 0) first = 0;
+            if (first > maxFirst) first = maxFirst;
+            int maxCursor = Math.Min(visible - 1, count - first - 1);
+            if (cursor < 0) cursor = 0;
+            if (cursor > maxCursor) cursor = maxCursor;
+
+            int oldFirst = first;
+            int oldCursor = cursor;
+            if (direction > 0)
+            {
+                if (cursor < centerLane && cursor < maxCursor)
+                    cursor++;
+                else if (first < maxFirst)
+                    first++;
+                else if (cursor < maxCursor)
+                    cursor++;
+            }
+            else if (direction < 0)
+            {
+                if (cursor > centerLane)
+                    cursor--;
+                else if (first > 0)
+                    first--;
+                else if (cursor > 0)
+                    cursor--;
+            }
+
+            maxCursor = Math.Min(visible - 1, count - first - 1);
+            if (cursor > maxCursor) cursor = maxCursor;
+            if (cursor < 0) cursor = 0;
+            Ui.CargoBlockScrollIndex = first;
+            Ui.CargoBlockCursorIndex = cursor;
+            if (first != oldFirst || cursor != oldCursor)
+                Ui.CargoBlockCursorActiveUntilTick = _currentTick + 300;
+            return first != oldFirst || cursor != oldCursor;
+        }
+        int GetCachedCargoBlockScrollMax()
+        {
+            var summary = Ui != null ? Ui.CachedCargoLoadSummary : null;
+            int count = summary != null && summary.Blocks != null ? summary.Blocks.Count : 0;
+            return Math.Max(0, count - 13);
+        }
+
+        int GetCachedCargoMixScrollMax()
+        {
+            var summary = Ui != null ? Ui.CachedCargoSummary : null;
+            if (summary == null || summary.TopItems == null)
+                return 0;
+
+            string filter = Ui != null ? NormalizeCargoInfoSelector(Ui.CargoInfoFilter) : "ALL";
+            int count = 0;
+            for (int i = 0; i < summary.TopItems.Count; i++)
+            {
+                var item = summary.TopItems[i];
+                if (item == null)
+                    continue;
+                string category = NormalizeCargoInfoSelector(item.Category);
+                if (filter == "ALL" || string.Equals(category, filter, StringComparison.Ordinal))
+                    count++;
+            }
+
+            return Math.Max(0, count - 6);
+        }
+        List<OverlayBlockInfoLine> BuildSelectedCargoActionRows()
+        {
+            var rows = new List<OverlayBlockInfoLine>();
+            var blocks = new List<IMyCubeBlock>();
+
+            if (Ui.SelectedBlockStackItems != null && Ui.SelectedBlockStackItems.Count > 0)
+            {
+                if (Ui.SelectedBlockStackIndex >= 0 && Ui.SelectedBlockStackIndex < Ui.SelectedBlockStackItems.Count)
+                {
+                    var item = Ui.SelectedBlockStackItems[Ui.SelectedBlockStackIndex];
+                    if (item != null && item.Block != null)
+                        blocks.Add(item.Block);
+                }
+                else
+                {
+                    for (int i = 0; i < Ui.SelectedBlockStackItems.Count; i++)
+                    {
+                        var item = Ui.SelectedBlockStackItems[i];
+                        if (item != null && item.Block != null)
+                            blocks.Add(item.Block);
+                    }
+                }
+            }
+
+            if (blocks.Count > 0)
+            {
+                AddSharedCargoActionRows(blocks, rows);
+                return rows;
+            }
+
+            var info = FindOverlayInfo(Ui.SelectedOverlayBlockId);
+            if (info == null || info.Lines == null)
+                return rows;
+            for (int i = 0; i < info.Lines.Count; i++)
+            {
+                var line = info.Lines[i];
+                if (line == null || line.IsSeparator || line.IsFillBar)
+                    continue;
+                if (line.CanToggle || (line.TerminalBlocks != null && line.TerminalBlocks.Count > 0))
+                    rows.Add(line);
+            }
+            return rows;
+        }
+
+        void AddSharedCargoActionRows(List<IMyCubeBlock> blocks, List<OverlayBlockInfoLine> rows)
+        {
+            var map = new Dictionary<string, OverlayBlockInfoLine>();
+            for (int blockIndex = 0; blockIndex < blocks.Count; blockIndex++)
+            {
+                var terminal = blocks[blockIndex] as IMyTerminalBlock;
+                if (terminal == null)
+                    continue;
+
+                var actions = new List<ITerminalAction>();
+                try
+                {
+                    terminal.GetActions(actions);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < actions.Count; i++)
+                {
+                    var action = actions[i];
+                    if (action == null)
+                        continue;
+                    string key = action.Id;
+                    if (string.IsNullOrEmpty(key))
+                        key = action.Name != null ? action.Name.ToString() : string.Empty;
+                    if (string.IsNullOrEmpty(key))
+                        continue;
+
+                    OverlayBlockInfoLine line;
+                    if (!map.TryGetValue(key, out line))
+                    {
+                        string label = action.Name != null ? action.Name.ToString() : key;
+                        line = new OverlayBlockInfoLine { Text = "Action: " + label, TerminalActionId = key };
+                        map[key] = line;
+                        rows.Add(line);
+                    }
+                    line.TerminalBlocks.Add(terminal);
+                    line.TerminalActions.Add(action);
+                }
+            }
+        }
         bool UpdateInfoPanelStackHeaderScroll()
         {
             if (!TouchInput.IsAvailable || !TouchInput.IsCursorOnScreen || MyAPIGateway.Input == null)
@@ -2113,19 +3882,21 @@ namespace GridSchematics
 
         int GetInfoPanelStackHeaderMaxScroll()
         {
-            if (Surface == null || Ui.SelectedBlockStackItems == null || Ui.SelectedBlockStackItems.Count <= 0)
+            if (Ui.SelectedBlockStackItems == null || Ui.SelectedBlockStackItems.Count <= 0)
                 return 0;
-
-            var zones = UiLayout.BuildZones((int)Surface.SurfaceSize.X, (int)Surface.SurfaceSize.Y);
-            var metrics = UiLayout.BuildChromeMetrics((int)Surface.SurfaceSize.X, (int)Surface.SurfaceSize.Y);
-            int pinnedWidth = UiLayout.InfoPanelPinnedTabWidth((int)Surface.SurfaceSize.X, metrics);
-            int pinnedCount = Ui.SelectedBlockStackItems.Count > 1 ? 2 : 1;
-            int stripWidth = zones.Center.Width - pinnedWidth * pinnedCount;
-            int tabWidth = UiLayout.InfoPanelBlockTabWidth((int)Surface.SurfaceSize.X, metrics);
-            int visibleCount = stripWidth > 0 ? stripWidth / tabWidth : 1;
-            if (visibleCount < 1)
-                visibleCount = 1;
-            return Math.Max(0, Ui.SelectedBlockStackItems.Count - visibleCount);
+            if (Ui.ActiveOverlay == OverlayMode.Cargo && SupportsFullInfoPanel && Surface != null && (int)Surface.SurfaceSize.X == 512 && (int)Surface.SurfaceSize.Y == 512)
+            {
+                const int slot = 64;
+                int fixedWidth = slot;
+                int groupCount = GetManualBlockGroupCount();
+                if (groupCount > 0)
+                    fixedWidth += slot * Math.Min(2, groupCount);
+                else if (Ui.SelectedBlockStackItems.Count > 1)
+                    fixedWidth += slot;
+                int visibleSlots = Math.Max(0, (512 - fixedWidth) / slot);
+                return Math.Max(0, Ui.SelectedBlockStackItems.Count - visibleSlots);
+            }
+            return Math.Max(0, Ui.SelectedBlockStackItems.Count - 1);
         }
 
         bool TrySelectPreviewBlockStack()
@@ -2156,6 +3927,9 @@ namespace GridSchematics
             Ui.ActiveMenu = MenuPanel.None;
             if (SupportsFullInfoPanel)
                 ResetViewportCameraForInfoDrawerOpen();
+            SyncCargoBlockCursorToSelectedSingleBlock();
+            if (Ui.SelectedBlockStackItems.Count > 1 || Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex)
+                DeactivateCargoTransferSelectionFocus();
             PersistPanelSettings();
             return true;
         }
@@ -2197,17 +3971,28 @@ namespace GridSchematics
             if (!_renderClickMoved && IsCursorInRenderArea())
             {
                 string hover = TouchInput.HoverRegionId ?? string.Empty;
-                if (IsOverlayBlockRegion(_renderClickStartRegionId) &&
-                    string.Equals(_renderClickStartRegionId, hover, StringComparison.Ordinal))
+                bool sameOverlay = IsOverlayBlockRegion(_renderClickStartRegionId) && string.Equals(_renderClickStartRegionId, hover, StringComparison.Ordinal);
+                bool emptyRenderClick = string.IsNullOrEmpty(_renderClickStartRegionId) && string.IsNullOrEmpty(hover);
+                if (sameOverlay || emptyRenderClick)
                 {
-                    handled = HandleOverlayBlockPress(_renderClickStartRegionId);
-                }
-                else if (string.IsNullOrEmpty(_renderClickStartRegionId) && string.IsNullOrEmpty(hover))
-                {
-                    handled = TrySelectPreviewBlockStack();
+                    if (IsControlHeld())
+                    {
+                        handled = RemovePreviewBlockFromManualSelection();
+                    }
+                    else if (IsShiftHeld())
+                    {
+                        handled = AddPreviewBlockToManualSelection();
+                    }
+                    else if (sameOverlay)
+                    {
+                        handled = HandleOverlayBlockPress(_renderClickStartRegionId);
+                    }
+                    else
+                    {
+                        handled = TrySelectPreviewBlockStack();
+                    }
                 }
             }
-
             ResetRenderClickSelection();
             return handled;
         }
@@ -2222,7 +4007,7 @@ namespace GridSchematics
         void ClearSelectedBlockStack()
         {
             Ui.SelectedBlockStackItems.Clear();
-            Ui.SelectedBlockStackIndex = 0;
+            Ui.SelectedBlockStackIndex = UiState.SelectedBlockStackAllIndex;
             Ui.SelectedBlockStackScrollIndex = 0;
             Ui.SelectedBlockStackSignature = string.Empty;
         }
@@ -2235,7 +4020,7 @@ namespace GridSchematics
                 return false;
             }
 
-            if (!TouchInput.IsPressed)
+            if (!TouchInput.IsSecondaryPressed)
             {
                 _isPanningRender = false;
                 return false;
@@ -2271,6 +4056,20 @@ namespace GridSchematics
             return true;
         }
 
+        bool IsShiftHeld()
+        {
+            if (MyAPIGateway.Input == null)
+                return false;
+
+            try
+            {
+                return MyAPIGateway.Input.IsAnyShiftKeyPressed();
+            }
+            catch
+            {
+                return false;
+            }
+        }
         bool IsControlHeld()
         {
             if (MyAPIGateway.Input == null)
@@ -2307,9 +4106,43 @@ namespace GridSchematics
             if (info == null || info.Lines == null || Ui.SelectedOverlayLineIndex < 0 || Ui.SelectedOverlayLineIndex >= info.Lines.Count)
                 return false;
 
-            var line = info.Lines[Ui.SelectedOverlayLineIndex];
+            return ApplyOverlayInfoLine(info.Lines[Ui.SelectedOverlayLineIndex]);
+        }
+
+        bool ApplyOverlayInfoLine(OverlayBlockInfoLine line)
+        {
             if (line == null)
                 return false;
+
+            if (line.TerminalBlocks != null && line.TerminalActions != null && line.TerminalBlocks.Count > 0)
+            {
+                bool applied = false;
+                int count = Math.Min(line.TerminalBlocks.Count, line.TerminalActions.Count);
+                for (int i = 0; i < count; i++)
+                {
+                    var block = line.TerminalBlocks[i];
+                    var action = line.TerminalActions[i];
+                    if (block == null || action == null)
+                        continue;
+                    try
+                    {
+                        if (!action.IsEnabled(block))
+                            continue;
+                    }
+                    catch
+                    {
+                    }
+                    try
+                    {
+                        action.Apply(block);
+                        applied = true;
+                    }
+                    catch
+                    {
+                    }
+                }
+                return applied;
+            }
 
             if (line.BatteryBlock != null)
             {
@@ -2376,13 +4209,12 @@ namespace GridSchematics
             return p.X >= renderZone.X && p.X <= renderZone.X + renderZone.Width &&
                 p.Y >= renderZone.Y && p.Y <= renderZone.Y + renderZone.Height;
         }
-
         ScreenZone BuildInteractiveRenderZone(ScreenZone center)
         {
             if (Ui.ChromeHidden || !SupportsInfoPanel || !Ui.ShowInfoPanel || Ui.SegmentMode)
                 return center;
 
-            var infoPanel = UiLayout.BuildInfoPanelZone(center, SupportsFullInfoPanel);
+            var infoPanel = Ui.InfoPanelMode == InfoPanelMode.Systems && Ui.ActiveOverlay == OverlayMode.Cargo ? UiLayout.BuildCargoInfoPanelZone(center, SupportsFullInfoPanel) : UiLayout.BuildInfoPanelZone(center, SupportsFullInfoPanel);
 
             return new ScreenZone(
                 ScreenZoneType.CenterViewport,
@@ -2920,8 +4752,14 @@ namespace GridSchematics
             TouchInput.AddHitRegion(new HitRegion(zones.Bottom.X, zones.Bottom.Y, zones.Bottom.Width, zones.Bottom.Height, UiLayout.UiBlockerId, "UI chrome"));
             if (SupportsInfoPanel && Ui.ShowInfoPanel && !Ui.SegmentMode)
             {
-                var infoPanelZone = UiLayout.BuildInfoPanelZone(zones.Center, SupportsFullInfoPanel);
+                var infoPanelZone = Ui.InfoPanelMode == InfoPanelMode.Systems && Ui.ActiveOverlay == OverlayMode.Cargo ? UiLayout.BuildCargoInfoPanelZone(zones.Center, SupportsFullInfoPanel) : UiLayout.BuildInfoPanelZone(zones.Center, SupportsFullInfoPanel);
                 TouchInput.AddHitRegion(new HitRegion(infoPanelZone.X, infoPanelZone.Y, infoPanelZone.Width, infoPanelZone.Height, UiLayout.UiBlockerId, "Info panel"));
+                if (Ui.InfoPanelMode == InfoPanelMode.Systems && Ui.ActiveOverlay == OverlayMode.Cargo)
+                {
+                    var cargoRegions = UiLayout.BuildCargoInfoPanelRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, SupportsFullInfoPanel, Ui.CargoFilterDropdownOpen, Ui.CargoRightPanelMode);
+                    for (int i = 0; i < cargoRegions.Length; i++)
+                        TouchInput.AddHitRegion(cargoRegions[i]);
+                }
             }
 
             var panelBlockerRegions = UiLayout.BuildMenuPanelRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, Ui.ActiveMenu, Ui.SettingsExpandedMask);
@@ -2960,6 +4798,9 @@ namespace GridSchematics
                 TouchInput.AddHitRegion(bottomInfoRegions[i]);
             }
 
+            var drawerToggleRegion = UiLayout.BuildInfoDrawerToggleRegion((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, Ui.ShowInfoPanel && Ui.InfoPanelMode == InfoPanelMode.Systems);
+            if (!string.IsNullOrEmpty(drawerToggleRegion.Id) && drawerToggleRegion.Width > 0 && drawerToggleRegion.Height > 0)
+                TouchInput.AddHitRegion(drawerToggleRegion);
             var panelRegions = UiLayout.BuildMenuPanelRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, Ui.ActiveMenu, Ui.SettingsExpandedMask);
             for (int i = 0; i < panelRegions.Length; i++)
             {
@@ -2974,10 +4815,9 @@ namespace GridSchematics
                     TouchInput.AddHitRegion(scanDrawerRegions[i]);
                 }
             }
-            else if (SupportsInfoPanel && Ui.ShowInfoPanel && Ui.InfoPanelMode == InfoPanelMode.Systems &&
-                Ui.SelectedBlockStackItems != null && Ui.SelectedBlockStackItems.Count > 0)
+            else if (SupportsInfoPanel && Ui.ShowInfoPanel && Ui.InfoPanelMode == InfoPanelMode.Systems)
             {
-                var tabRegions = UiLayout.BuildInfoPanelBlockTabRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, Ui.SelectedBlockStackItems.Count, Ui.SelectedBlockStackScrollIndex);
+                var tabRegions = UiLayout.BuildInfoPanelBlockTabRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, Ui.SelectedBlockStackItems, Ui.SelectedBlockStackScrollIndex, Ui.ActiveOverlay == OverlayMode.Cargo, HasManualBlockSelection(), GetManualBlockGroupCount());
                 for (int i = 0; i < tabRegions.Length; i++)
                 {
                     TouchInput.AddHitRegion(tabRegions[i]);
@@ -3108,3 +4948,57 @@ namespace GridSchematics
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

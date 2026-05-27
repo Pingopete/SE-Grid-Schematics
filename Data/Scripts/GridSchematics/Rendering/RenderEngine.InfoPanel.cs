@@ -1,4 +1,5 @@
 using Sandbox.ModAPI;
+using Sandbox.ModAPI.Interfaces;
 using VRage.Game.ModAPI;
 using VRage.Game.GUI.TextPanel;
 using VRageMath;
@@ -16,6 +17,13 @@ namespace GridSchematics
 
         static ScreenZone BuildInfoPanelZone(ScreenZone center, bool fullPanel)
         {
+            return UiLayout.BuildInfoPanelZone(center, fullPanel);
+        }
+
+        static ScreenZone BuildInfoPanelZone(ScreenZone center, GridSchematicsLcdApp app, bool fullPanel)
+        {
+            if (app != null && app.Ui != null && app.Ui.InfoPanelMode == InfoPanelMode.Systems && app.Ui.ActiveOverlay == OverlayMode.Cargo)
+                return UiLayout.BuildCargoInfoPanelZone(center, fullPanel);
             return UiLayout.BuildInfoPanelZone(center, fullPanel);
         }
 
@@ -54,12 +62,22 @@ namespace GridSchematics
             var panelSize = new Vector2(zone.Width, zone.Height);
             AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", panelCenter, panelSize, UiPanelFillSoft));
             DrawScreenRectBorder(frame, panelCenter, panelSize, UiAccentDim);
-            if (app.Ui.InfoPanelMode == InfoPanelMode.Systems && app.Ui.SelectedBlockStackItems != null && app.Ui.SelectedBlockStackItems.Count > 0)
+            DrawInfoDrawerToggleBehindHeader(frame, app);
+            if (app.Ui.InfoPanelMode == InfoPanelMode.Systems && ((app.Ui.SelectedBlockStackItems != null && app.Ui.SelectedBlockStackItems.Count > 0) || GetManualBlockGroupCount(app.Ui) > 0))
                 DrawInfoPanelHeaderTabs(frame, zone, app);
             else
                 DrawInfoPanelHeader(frame, zone, GetInfoPanelHeading(app));
             if (headerOnly)
                 return;
+
+            if (app.Ui.ActiveOverlay == OverlayMode.Cargo)
+            {
+                var selectedCargoInfo = BuildSelectedBlockStackInfo(app.Ui);
+                if (selectedCargoInfo == null)
+                    selectedCargoInfo = FindSelectedOverlayInfo(app.Ui);
+                DrawCargoInfoDrawerWidgets(frame, zone, app, selectedCargoInfo, headerMetrics.InfoHeaderHeight, isCursorOnlyRender);
+                return;
+            }
 
             int detailWidth = Math.Max(116, (int)Math.Round(zone.Width * 0.30f));
             int minGraphWidth = metrics.SI(120f);
@@ -104,13 +122,25 @@ namespace GridSchematics
                     new Vector2(detailWidget.X + detailWidget.Width * 0.5f, detailWidget.Y + detailWidget.Height * 0.68f),
                     null,
                     UiTextMuted,
-                    CurrentTextFontId,
+                    InfoDrawerTextFontId,
                     TextAlignment.CENTER,
                     metrics.MediumText
                 ));
             }
         }
 
+        static void DrawInfoDrawerToggleBehindHeader(MySpriteDrawFrame frame, GridSchematicsLcdApp app)
+        {
+            if (app == null || app.Surface == null || app.Ui == null || app.Ui.InfoPanelMode != InfoPanelMode.Systems)
+                return;
+
+            var region = UiLayout.BuildInfoDrawerToggleRegion((int)app.Surface.SurfaceSize.X, (int)app.Surface.SurfaceSize.Y, true);
+            if (string.IsNullOrEmpty(region.Id) || region.Width <= 0 || region.Height <= 0)
+                return;
+
+            string hoverId = app.TouchInput != null ? app.TouchInput.HoverRegionId ?? string.Empty : string.Empty;
+            DrawViewButton(frame, region, "HIDE", false, string.Equals(region.Id, hoverId, StringComparison.Ordinal));
+        }
         static string GetInfoPanelHeading(GridSchematicsLcdApp app)
         {
             if (app.Ui.InfoPanelMode == InfoPanelMode.Scan)
@@ -177,52 +207,182 @@ namespace GridSchematics
             AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", headerCenter, new Vector2(zone.Width, headerHeight), UiMenuButtonFill));
             AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(zone.X + zone.Width * 0.5f, zone.Y + headerHeight - metrics.Line * 0.5f), new Vector2(zone.Width, metrics.Line), UiAccentDim));
 
-            if (ui == null || ui.SelectedBlockStackItems == null || ui.SelectedBlockStackItems.Count == 0)
-                return;
-
-            int count = ui.SelectedBlockStackItems.Count;
+            int count = ui != null && ui.SelectedBlockStackItems != null ? ui.SelectedBlockStackItems.Count : 0;
+            int manualGroupCount = GetManualBlockGroupCount(ui);
+            bool manualSelectionAvailable = manualGroupCount > 0;
+            bool manualSelected = IsManualSelectedBlockStack(ui);
             int metricScreenWidth = app != null && app.Surface != null ? (int)app.Surface.SurfaceSize.X : zone.Width;
+            int metricScreenHeight = app != null && app.Surface != null ? (int)app.Surface.SurfaceSize.Y : 512;
+            if (app != null && app.Ui.ActiveOverlay == OverlayMode.Cargo && metricScreenWidth == 512 && metricScreenHeight == 512)
+            {
+                const int slot = 64;
+                var fixedAllRegion = new HitRegion(0, zone.Y, slot, headerHeight, UiLayout.InfoPanelAllTabId, "Show all blocks");
+                DrawInfoHeaderButton(frame, fixedAllRegion, "ALL", ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex, string.Equals(hoverId, fixedAllRegion.Id, StringComparison.Ordinal));
+                int fixedX = slot;
+                if (manualGroupCount > 0)
+                {
+                    var group1Region = new HitRegion(fixedX, zone.Y, slot, headerHeight, UiLayout.InfoPanelStackTabId, "Show group");
+                    DrawInfoHeaderButton(frame, group1Region, ManualGroupHeaderLabel(ui, 1, manualGroupCount), IsManualGroupSelected(ui, 1), string.Equals(hoverId, group1Region.Id, StringComparison.Ordinal));
+                    fixedX += slot;
+                    if (manualGroupCount > 1)
+                    {
+                        var group2Region = new HitRegion(fixedX, zone.Y, slot, headerHeight, UiLayout.InfoPanelGroup2TabId, "Show group 2");
+                        DrawInfoHeaderButton(frame, group2Region, ManualGroupHeaderLabel(ui, 2, manualGroupCount), IsManualGroupSelected(ui, 2), string.Equals(hoverId, group2Region.Id, StringComparison.Ordinal));
+                        fixedX += slot;
+                    }
+                }
+                else if (count > 1)
+                {
+                    var stackRegion = new HitRegion(fixedX, zone.Y, slot, headerHeight, UiLayout.InfoPanelStackTabId, "Show selected stack");
+                    DrawInfoHeaderButton(frame, stackRegion, StackHeaderLabel(ui), ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex, string.Equals(hoverId, stackRegion.Id, StringComparison.Ordinal));
+                    fixedX += slot;
+                }
+
+                int visibleSlots = Math.Max(0, (zone.X + zone.Width - fixedX) / slot);
+                int fixedMaxScroll = Math.Max(0, count - visibleSlots);
+                if (ui.SelectedBlockStackScrollIndex < 0)
+                    ui.SelectedBlockStackScrollIndex = 0;
+                if (ui.SelectedBlockStackScrollIndex > fixedMaxScroll)
+                    ui.SelectedBlockStackScrollIndex = fixedMaxScroll;
+                for (int slotIndex = 0; slotIndex < visibleSlots; slotIndex++)
+                {
+                    int itemIndex = ui.SelectedBlockStackScrollIndex + slotIndex;
+                    if (itemIndex >= count)
+                        break;
+                    var item = ui.SelectedBlockStackItems[itemIndex];
+                    if (item == null)
+                        continue;
+                    bool selected = itemIndex == ui.SelectedBlockStackIndex || ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex;
+                    var region = new HitRegion(fixedX + slotIndex * slot, zone.Y, slot, headerHeight, UiLayout.InfoPanelBlockTabPrefix + itemIndex.ToString(), "Select block tab");
+                    DrawInfoHeaderButton(frame, region, ShortenInfoTabText(item.Name), selected, string.Equals(hoverId, region.Id, StringComparison.Ordinal));
+                }
+                DrawInfoHeaderScrollHints(frame, fixedX, zone.X + zone.Width, zone.Y, headerHeight, ui.SelectedBlockStackScrollIndex, Math.Max(0, count - (ui.SelectedBlockStackScrollIndex + visibleSlots)));
+                return;
+            }
+
             int pinnedWidth = UiLayout.InfoPanelPinnedTabWidth(metricScreenWidth, metrics);
             int x = zone.X;
             var allRegion = new HitRegion(x, zone.Y, pinnedWidth, headerHeight, UiLayout.InfoPanelAllTabId, "Show all blocks");
             DrawInfoHeaderButton(frame, allRegion, "ALL", ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex, string.Equals(hoverId, allRegion.Id, StringComparison.Ordinal));
             x += pinnedWidth;
-            if (count > 1)
+            if (manualGroupCount > 0)
+            {
+                var group1Region = new HitRegion(x, zone.Y, pinnedWidth, headerHeight, UiLayout.InfoPanelStackTabId, "Show group");
+                DrawInfoHeaderButton(frame, group1Region, ManualGroupHeaderLabel(ui, 1, manualGroupCount), IsManualGroupSelected(ui, 1), string.Equals(hoverId, group1Region.Id, StringComparison.Ordinal));
+                x += pinnedWidth;
+                if (manualGroupCount > 1)
+                {
+                    var group2Region = new HitRegion(x, zone.Y, pinnedWidth, headerHeight, UiLayout.InfoPanelGroup2TabId, "Show group 2");
+                    DrawInfoHeaderButton(frame, group2Region, ManualGroupHeaderLabel(ui, 2, manualGroupCount), IsManualGroupSelected(ui, 2), string.Equals(hoverId, group2Region.Id, StringComparison.Ordinal));
+                    x += pinnedWidth;
+                }
+            }
+            else if (count > 1)
             {
                 var stackRegion = new HitRegion(x, zone.Y, pinnedWidth, headerHeight, UiLayout.InfoPanelStackTabId, "Show selected stack");
-                DrawInfoHeaderButton(frame, stackRegion, "STACK", ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex, string.Equals(hoverId, stackRegion.Id, StringComparison.Ordinal));
+                DrawInfoHeaderButton(frame, stackRegion, StackHeaderLabel(ui), ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex, string.Equals(hoverId, stackRegion.Id, StringComparison.Ordinal));
                 x += pinnedWidth;
             }
 
             int stripX = x;
-            int stripWidth = Math.Max(0, zone.X + zone.Width - stripX);
-            int tabWidth = UiLayout.InfoPanelBlockTabWidth(metricScreenWidth, metrics);
-            int visibleCount = stripWidth > 0 ? stripWidth / tabWidth : 1;
-            if (visibleCount < 1)
-                visibleCount = 1;
-            int maxScroll = Math.Max(0, count - visibleCount);
+            int maxScroll = Math.Max(0, count - 1);
             if (ui.SelectedBlockStackScrollIndex < 0)
                 ui.SelectedBlockStackScrollIndex = 0;
             if (ui.SelectedBlockStackScrollIndex > maxScroll)
                 ui.SelectedBlockStackScrollIndex = maxScroll;
 
+            int cursor = stripX;
+            int lastVisibleIndex = ui.SelectedBlockStackScrollIndex - 1;
             for (int i = ui.SelectedBlockStackScrollIndex; i < count; i++)
             {
-                int tabX = stripX + (i - ui.SelectedBlockStackScrollIndex) * tabWidth;
-                if (tabX >= zone.X + zone.Width)
-                    break;
-                int width = Math.Min(tabWidth, zone.X + zone.Width - tabX);
-                if (width <= 0)
+                if (cursor >= zone.X + zone.Width)
                     break;
 
                 var item = ui.SelectedBlockStackItems[i];
                 if (item == null)
                     continue;
 
+                int width = UiLayout.InfoPanelBlockTabWidthForLabel(metricScreenWidth, metrics, item.Name);
+                if (cursor + width > zone.X + zone.Width)
+                    width = zone.X + zone.Width - cursor;
+                if (width <= 0)
+                    break;
+
                 bool selected = i == ui.SelectedBlockStackIndex || ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex;
-                var region = new HitRegion(tabX, zone.Y, width, headerHeight, UiLayout.InfoPanelBlockTabPrefix + i, "Select block tab");
+                var region = new HitRegion(cursor, zone.Y, width, headerHeight, UiLayout.InfoPanelBlockTabPrefix + i, "Select block tab");
                 DrawInfoHeaderButton(frame, region, ShortenInfoTabText(item.Name), selected, string.Equals(hoverId, region.Id, StringComparison.Ordinal));
+                cursor += width;
+                lastVisibleIndex = i;
             }
+            DrawInfoHeaderScrollHints(frame, stripX, zone.X + zone.Width, zone.Y, headerHeight, ui.SelectedBlockStackScrollIndex, Math.Max(0, count - lastVisibleIndex - 1));
+        }
+
+        static void DrawInfoHeaderScrollHints(MySpriteDrawFrame frame, int stripX, int stripRight, int y, int headerHeight, int hiddenLeft, int hiddenRight)
+        {
+            float centerY = y + headerHeight * 0.5f;
+            if (hiddenLeft > 0)
+            {
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(stripX + 12f, centerY), new Vector2(24f, headerHeight), UiMenuButtonFill));
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(stripX + 7f, centerY), new Vector2(6f, 6f), UiSelected, null, TextAlignment.CENTER, -1.5708f));
+                AddSprite(frame, new MySprite(SpriteType.TEXT, hiddenLeft.ToString(), new Vector2(stripX + 14f, y + headerHeight * 0.5f - 5f), null, UiSelected, CurrentTextFontId, TextAlignment.LEFT, 0.22f));
+            }
+            if (hiddenRight > 0)
+            {
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(stripRight - 12f, centerY), new Vector2(24f, headerHeight), UiMenuButtonFill));
+                AddSprite(frame, new MySprite(SpriteType.TEXT, hiddenRight.ToString(), new Vector2(stripRight - 18f, y + headerHeight * 0.5f - 5f), null, UiSelected, CurrentTextFontId, TextAlignment.RIGHT, 0.22f));
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(stripRight - 7f, centerY), new Vector2(6f, 6f), UiSelected, null, TextAlignment.CENTER, 1.5708f));
+            }
+        }
+
+        static int GetManualBlockGroupCount(UiState ui)
+        {
+            if (ui == null)
+                return 0;
+            if (ui.ManualGroup2Enabled)
+                return 2;
+            return ui.ManualSelectedBlockItems != null && ui.ManualSelectedBlockItems.Count > 0 ? 1 : 0;
+        }
+
+        static int GetSelectedManualGroupIndex(UiState ui)
+        {
+            if (ui == null || string.IsNullOrEmpty(ui.SelectedBlockStackSignature))
+                return 0;
+            if (string.Equals(ui.SelectedBlockStackSignature, "manual:selection", StringComparison.Ordinal) ||
+                string.Equals(ui.SelectedBlockStackSignature, "manual:group:1", StringComparison.Ordinal))
+                return 1;
+            if (string.Equals(ui.SelectedBlockStackSignature, "manual:group:2", StringComparison.Ordinal))
+                return 2;
+            return 0;
+        }
+
+        static bool IsManualSelectedBlockStack(UiState ui)
+        {
+            return GetSelectedManualGroupIndex(ui) > 0;
+        }
+
+        static bool IsManualGroupSelected(UiState ui, int groupIndex)
+        {
+            return GetSelectedManualGroupIndex(ui) == groupIndex;
+        }
+
+        static int GetManualGroupItemCount(UiState ui, int groupIndex)
+        {
+            if (ui == null)
+                return 0;
+            var items = groupIndex == 2 ? ui.ManualSelectedBlockItems2 : ui.ManualSelectedBlockItems;
+            return items != null ? items.Count : 0;
+        }
+
+        static string ManualGroupHeaderLabel(UiState ui, int groupIndex, int groupCount)
+        {
+            string name = groupCount > 1 ? "GROUP" + (groupIndex == 2 ? "B" : "A") : "GROUP";
+            return name + "-" + GetManualGroupItemCount(ui, groupIndex).ToString();
+        }
+
+        static string StackHeaderLabel(UiState ui)
+        {
+            int count = ui != null && ui.SelectedBlockStackItems != null ? ui.SelectedBlockStackItems.Count : 0;
+            return count > 0 ? "STACK-" + count.ToString() : "STACK";
         }
 
         static void DrawInfoHeaderButton(MySpriteDrawFrame frame, HitRegion region, string label, bool active, bool hover)
@@ -338,8 +498,8 @@ namespace GridSchematics
             var info = new OverlayBlockInfo
             {
                 Id = ui.SelectedBlockStackSignature,
-                Name = "Selected Stack",
-                Role = "Stack",
+                Name = IsManualSelectedBlockStack(ui) ? "Group" : "Selected Stack",
+                Role = IsManualSelectedBlockStack(ui) ? "Group" : "Stack",
                 Count = ui.SelectedBlockStackItems.Count
             };
 
@@ -361,24 +521,73 @@ namespace GridSchematics
 
             float averageFill = fillCount > 0 ? fillTotal / fillCount : 0f;
             info.Metric = "Fill: " + ((int)Math.Round(averageFill * 100f)).ToString() + "%";
-            info.Lines.Add(new OverlayBlockInfoLine { Text = "Stack: " + ui.SelectedBlockStackItems.Count.ToString() + " blocks" });
+            info.Lines.Add(new OverlayBlockInfoLine { Text = (IsManualSelectedBlockStack(ui) ? "Group: " : "Stack: ") + ui.SelectedBlockStackItems.Count.ToString() + " blocks" });
             info.Lines.Add(new OverlayBlockInfoLine
             {
                 Text = info.Metric,
                 IsFillBar = true,
                 FillRatio = averageFill
             });
-            for (int i = 0; i < ui.SelectedBlockStackItems.Count; i++)
-            {
-                var item = ui.SelectedBlockStackItems[i];
-                if (item == null)
-                    continue;
-                info.Lines.Add(new OverlayBlockInfoLine { Text = ShortenBlockStackLabel(item.Name, 28) });
-            }
+            AddSharedTerminalActionLines(info);
 
             return info;
         }
 
+
+        static void AddSharedTerminalActionLines(OverlayBlockInfo info)
+        {
+            if (info == null || info.Blocks == null || info.Blocks.Count == 0)
+                return;
+
+            var map = new Dictionary<string, OverlayBlockInfoLine>();
+            for (int blockIndex = 0; blockIndex < info.Blocks.Count; blockIndex++)
+            {
+                var terminal = info.Blocks[blockIndex] as IMyTerminalBlock;
+                if (terminal == null)
+                    continue;
+
+                var actions = new List<ITerminalAction>();
+                try
+                {
+                    terminal.GetActions(actions);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < actions.Count; i++)
+                {
+                    var action = actions[i];
+                    if (action == null)
+                        continue;
+
+                    string key = action.Id;
+                    if (string.IsNullOrEmpty(key))
+                        key = GetTerminalActionName(action);
+                    if (string.IsNullOrEmpty(key))
+                        continue;
+
+                    OverlayBlockInfoLine line;
+                    if (!map.TryGetValue(key, out line))
+                    {
+                        string name = GetTerminalActionName(action);
+                        if (string.IsNullOrEmpty(name))
+                            name = key;
+                        line = new OverlayBlockInfoLine
+                        {
+                            Text = "Action: " + name,
+                            TerminalActionId = key
+                        };
+                        map[key] = line;
+                        info.Lines.Add(line);
+                    }
+
+                    line.TerminalBlocks.Add(terminal);
+                    line.TerminalActions.Add(action);
+                }
+            }
+        }
         static void DrawModeSymbolPanel(MySpriteDrawFrame frame, ScreenZone zone, GridSchematicsLcdApp app, bool isCursorOnlyRender)
         {
             var metrics = UiLayout.BuildMetrics(zone.Width, zone.Height);
@@ -505,3 +714,20 @@ namespace GridSchematics
 
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

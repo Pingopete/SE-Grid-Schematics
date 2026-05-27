@@ -115,14 +115,43 @@ namespace GridSchematics
         public string PreviewBlockStackSignature { get; set; }
         public string SelectedBlockStackSignature { get; set; }
         public int PreviewBlockStackIndex { get; set; }
-        public int SelectedBlockStackIndex { get; set; }
+        public int SelectedBlockStackIndex { get; set; } = SelectedBlockStackAllIndex;
         public int SelectedBlockStackScrollIndex { get; set; }
+        public string CargoInfoFilter { get; set; } = "ALL";
+        public string CargoInfoFocus { get; set; } = "ALL";
+        public int CargoActionScrollIndex { get; set; }
+        public int CargoBlockScrollIndex { get; set; }
+        public int CargoBlockCursorIndex { get; set; } = 6;
+        public int CargoBlockCursorActiveUntilTick { get; set; }
+        public int CargoMixScrollIndex { get; set; }
+        public string CargoMixSortKey { get; set; } = "QUANT";
+        public int CargoMixSortDirection { get; set; } = 1;
+        public bool CargoFilterDropdownOpen { get; set; }
+        public string CargoRightPanelMode { get; set; } = "TRANSFER";
+        public string CargoTransferCaptureTarget { get; set; } = string.Empty;
+        public int CargoTransferCaptureUntilTick { get; set; }
+        public string CargoTransferMixViewTarget { get; set; } = "SOURCE";
+        public bool CargoTransferSelectionActive { get; set; }
+        public bool CargoTransferDirectionReversed { get; set; }
+        public int CargoTransferQuotaScrollIndex { get; set; }
+        public List<string> CargoMixSelectedItemKeys { get; } = new List<string>();
+        public string CargoTransferSourceLabel { get; set; } = string.Empty;
+        public string CargoTransferDestLabel { get; set; } = string.Empty;
+        public List<BlockStackItem> CargoTransferSourceItems { get; } = new List<BlockStackItem>();
+        public List<BlockStackItem> CargoTransferDestItems { get; } = new List<BlockStackItem>();
+        public List<CargoTransferQuotaItem> CargoTransferQuotaItems { get; } = new List<CargoTransferQuotaItem>();
         public string CachedCargoSummaryKey { get; set; }
         public RenderEngine.CargoPanelSummary CachedCargoSummary { get; set; }
+        public string CachedCargoLoadSummaryKey { get; set; }
+        public RenderEngine.CargoPanelSummary CachedCargoLoadSummary { get; set; }
         public List<HitRegion> HitRegions { get; } = new List<HitRegion>();
         public List<OverlayBlockInfo> OverlayBlockRegions { get; } = new List<OverlayBlockInfo>();
         public List<BlockStackItem> PreviewBlockStackItems { get; } = new List<BlockStackItem>();
         public List<BlockStackItem> SelectedBlockStackItems { get; } = new List<BlockStackItem>();
+        public List<BlockStackItem> ManualSelectedBlockItems { get; } = new List<BlockStackItem>();
+        public List<BlockStackItem> ManualSelectedBlockItems2 { get; } = new List<BlockStackItem>();
+        public bool ManualGroup2Enabled { get; set; }
+        public int ActiveManualGroupIndex { get; set; }
     }
 
     public class PanelPerfStats
@@ -147,6 +176,18 @@ namespace GridSchematics
         public IMyCubeBlock Block;
         public Vector2I Projected;
         public int Depth;
+    }
+
+    public class CargoTransferQuotaItem
+    {
+        public string Key;
+        public string Name;
+        public string Category;
+        public string TypeId;
+        public string SubtypeId;
+        public float Amount;
+        public float Volume;
+        public float MaxAmount;
     }
 
     public class OverlayBlockInfo
@@ -179,6 +220,9 @@ namespace GridSchematics
         public IMyBatteryBlock BatteryBlock;
         public IMyTerminalBlock TerminalBlock;
         public ITerminalAction TerminalAction;
+        public string TerminalActionId;
+        public List<IMyTerminalBlock> TerminalBlocks = new List<IMyTerminalBlock>();
+        public List<ITerminalAction> TerminalActions = new List<ITerminalAction>();
 
         public bool CanToggle
         {
@@ -206,3 +250,12 @@ namespace GridSchematics
         }
     }
 }
+
+
+
+
+
+
+
+
+

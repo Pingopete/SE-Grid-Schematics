@@ -222,7 +222,7 @@ namespace GridSchematics
             else if (id == UiLayout.AdjustConveyorHueId)
                 Config.ConveyorHue = GridSchematicsConfig.DefaultConveyorColorHue;
             else if (id == UiLayout.CycleUiFontId)
-                Config.UiFont = "DEBUG";
+                Config.UiFont = GridSchematicsConfig.DefaultUiFont;
             else if (id == UiLayout.ToggleMouseControlId)
             {
                 Config.MouseControl = false;

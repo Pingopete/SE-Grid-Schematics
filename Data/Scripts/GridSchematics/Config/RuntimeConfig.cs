@@ -20,12 +20,13 @@ namespace GridSchematics
         public const int DefaultSchematicMainColorHue = 132;
         public const int DefaultSchematicSecondaryColorHue = 313;
         public const int DefaultConveyorColorHue = 187;
+        public const string DefaultUiFont = "MOZARTGLOW";
         static readonly UiFontOption[] UiFontOptions = new[]
         {
             new UiFontOption("DEBUG", "DEBUG", "Debug", new[] { "DEBUG" }),
             new UiFontOption("BAHNSCHRIFT", "BAHN", "GridSchematics_Bahnschrift", new[] { "BAHNSCHRIFT", "BAHN", "GRIDSCHEMATICS_BAHNSCHRIFT" }),
             new UiFontOption("CRYSRG", "CRYS", "GridSchematics_Crysrg", new[] { "CRYSRG", "CRYS", "GRIDSCHEMATICS_CRYSRG" }),
-            new UiFontOption("MONOM", "MONO", "GridSchematics_MonoM", new[] { "MONOM", "MONO_M", "MONO", "GRIDSCHEMATICS_MONOM" }),
+            new UiFontOption("MONOM", "MONO", "GridSchematics_MonoM", new[] { "MONOM", "MONO_M", "MONO", "MONOGLOW", "MONO_GLOW", "GRIDSCHEMATICS_MONOM" }),
             new UiFontOption("MONOMHARD", "MONOH", "GridSchematics_MonoMHard", new[] { "MONOMHARD", "MONO_M_HARD", "MONOHARD", "MONO HARD", "GRIDSCHEMATICS_MONOMHARD" }),
             new UiFontOption("MOZART", "MOZ", "GridSchematics_Mozart", new[] { "MOZART", "GRIDSCHEMATICS_MOZART" }),
             new UiFontOption("MOZARTGLOW", "MOZG", "GridSchematics_MozartGlow", new[] { "MOZARTGLOW", "MOZART_GLOW", "MOZGLOW", "GRIDSCHEMATICS_MOZARTGLOW" }),
@@ -76,7 +77,7 @@ namespace GridSchematics
         public float UiBrightness = 1f;
         public float UiSaturation = 1f;
         public float UiAlpha = 1f;
-        public string UiFont = "DEBUG";
+        public string UiFont = DefaultUiFont;
         public int UiAccentHueShift = DefaultUiHighlightColorHue;
         public float UiAccentBrightness = 1f;
         public float UiAccentSaturation = 1f;
@@ -771,7 +772,7 @@ namespace GridSchematics
             UiBrightness = 1f;
             UiSaturation = 1f;
             UiAlpha = 1f;
-            UiFont = "DEBUG";
+            UiFont = DefaultUiFont;
             UiAccentHueShift = DefaultUiHighlightColorHue;
             UiAccentBrightness = 1f;
             UiAccentSaturation = 1f;
@@ -854,7 +855,7 @@ namespace GridSchematics
         public static string NormalizeUiFont(string value)
         {
             if (string.IsNullOrEmpty(value))
-                return "DEBUG";
+                return DefaultUiFont;
 
             value = value.ToUpperInvariant();
             for (int i = 0; i < UiFontOptions.Length; i++)
@@ -872,7 +873,7 @@ namespace GridSchematics
                 }
             }
 
-            return "DEBUG";
+            return DefaultUiFont;
         }
 
         public static string GetUiFontSubtype(string value)
@@ -889,14 +890,14 @@ namespace GridSchematics
         {
             int index = GetUiFontOptionIndex(value);
             if (index < 0)
-                index = 0;
+                index = GetUiFontOptionIndex(DefaultUiFont);
             return UiFontOptions[index];
         }
 
         static int GetUiFontOptionIndex(string value)
         {
             if (string.IsNullOrEmpty(value))
-                return 0;
+                return GetUiFontOptionIndex(DefaultUiFont);
 
             for (int i = 0; i < UiFontOptions.Length; i++)
             {

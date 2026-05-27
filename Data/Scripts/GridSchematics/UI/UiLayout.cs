@@ -122,6 +122,7 @@ namespace GridSchematics
         public const string ToggleInfoPanelId = "menu:info";
         public const string InfoPanelAllTabId = "info:tab:all";
         public const string InfoPanelStackTabId = "info:tab:stack";
+        public const string InfoPanelGroup2TabId = "info:tab:group2";
         public const string InfoPanelBlockTabScrollId = "info:tab:scroll";
         public const string InfoPanelBlockTabPrefix = "info:tab:";
         public const string SegmentModeId = "mode:segment";
@@ -212,6 +213,32 @@ namespace GridSchematics
         public const string SchematicPowerId = "schematic:power";
         public const string SchematicOxygenId = "schematic:oxygen";
         public const string SchematicConveyorId = "schematic:conveyor";
+        public const string CargoInfoFocusAllId = "info:cargo:focus:all";
+        public const string CargoInfoFocusReachableId = "info:cargo:focus:reachable";
+        public const string CargoInfoFocusIsolatedId = "info:cargo:focus:isolated";
+        public const string CargoInfoFocusFullId = "info:cargo:focus:full";
+        public const string CargoInfoFocusOfflineId = "info:cargo:focus:offline";
+        public const string CargoInfoFilterToggleId = "info:cargo:filter:toggle";
+        public const string CargoInfoFilterPrefix = "info:cargo:filter:";
+        public const string CargoInfoActionScrollId = "info:cargo:action:scroll";
+        public const string CargoInfoBlockScrollId = "info:cargo:block:scroll";
+        public const string CargoInfoBlockPrefix = "info:cargo:block:bar:";
+        public const string CargoInfoMixScrollId = "info:cargo:mix:scroll";
+        public const string CargoInfoMixRowPrefix = "info:cargo:mix:row:";
+        public const string CargoInfoMixAddToQuotaId = "info:cargo:mix:addquota";
+        public const string CargoInfoMixSortPrefix = "info:cargo:mix:sort:";
+        public const string CargoInfoSendBlockToTransferId = "info:cargo:sendblock";
+        public const string CargoInfoTransferModeId = "info:cargo:right:transfer";
+        public const string CargoInfoActionsModeId = "info:cargo:right:actions";
+        public const string CargoInfoTransferSourceSelectId = "info:cargo:transfer:source";
+        public const string CargoInfoTransferSourceViewId = "info:cargo:transfer:source:view";
+        public const string CargoInfoTransferDestSelectId = "info:cargo:transfer:dest";
+        public const string CargoInfoTransferDestViewId = "info:cargo:transfer:dest:view";
+        public const string CargoInfoTransferDirectionId = "info:cargo:transfer:direction";
+        public const string CargoInfoTransferClearId = "info:cargo:transfer:clear";
+        public const string CargoInfoTransferNowId = "info:cargo:transfer:now";
+        public const string CargoInfoTransferQuotaPrefix = "info:cargo:transfer:quota:";
+        public const string CargoInfoActionPrefix = "info:cargo:action:";
 
         public static UiMetrics BuildMetrics(int width, int height)
         {
@@ -228,7 +255,7 @@ namespace GridSchematics
 
             var metrics = new UiMetrics();
             metrics.Scale = scale;
-            int headerBarHeight = metrics.SI(19f);
+            int headerBarHeight = metrics.SI(16f);
             metrics.TopRowHeight = headerBarHeight;
             metrics.BottomStripHeight = headerBarHeight;
             metrics.InfoHeaderHeight = headerBarHeight;
@@ -444,6 +471,39 @@ namespace GridSchematics
                 headerHeight);
         }
 
+        public static ScreenZone BuildCargoInfoPanelZone(ScreenZone center, bool fullPanel)
+        {
+            if (!fullPanel)
+                return BuildInfoPanelZone(center, false);
+
+            if (center.Width == 512 && center.Height == 480)
+                return new ScreenZone(ScreenZoneType.CenterViewport, center.X, 312, center.Width, 184);
+
+            var metrics = BuildMetrics(center.Width, center.Height);
+            var headerMetrics = BuildChromeMetrics(center.Width, center.Height);
+            int outerPad = metrics.SI(4f);
+            int outerGap = metrics.SI(3f);
+            int widgetWidth = Math.Max(16, (center.Width - outerPad * 2 - outerGap * 2) / 3);
+            int desiredPanelHeight = headerMetrics.InfoHeaderHeight + outerPad * 2 + widgetWidth;
+            int baselineHeight = (int)Math.Round(center.Height * 0.30f);
+            if (baselineHeight < metrics.InfoPanelMinHeight)
+                baselineHeight = Math.Min(center.Height, metrics.InfoPanelMinHeight);
+            if (desiredPanelHeight < baselineHeight)
+                desiredPanelHeight = baselineHeight;
+
+            int maxPanelHeight = center.Height - metrics.InfoPanelReservedMapHeight;
+            if (maxPanelHeight < 1)
+                maxPanelHeight = 1;
+            if (desiredPanelHeight > maxPanelHeight)
+                desiredPanelHeight = maxPanelHeight;
+
+            return new ScreenZone(
+                ScreenZoneType.CenterViewport,
+                center.X,
+                center.Y + center.Height - desiredPanelHeight,
+                center.Width,
+                desiredPanelHeight);
+        }
         public static ScreenZone BuildTransformedCenterZone(ScreenZone center, int zoomLevel, int panX, int panY)
         {
             if (zoomLevel < 0)
@@ -693,23 +753,24 @@ namespace GridSchematics
 
         public static HitRegion[] BuildBottomInfoRegions(int screenWidth, int screenHeight)
         {
-            if (!BuildSurfaceProfile(screenWidth, screenHeight).AllowInfoPanel)
-                return new HitRegion[0];
-
-            var metrics = BuildChromeMetrics(screenWidth, screenHeight);
-            int infoWidth = PanelButtonWidth(screenWidth, metrics, 74f);
-            int buttonHeight = metrics.BottomStripHeight;
-            int y = screenHeight - metrics.BottomStripHeight;
-            int x = screenWidth - infoWidth;
-            if (x < 0)
-                x = 0;
-
-            return new[]
-            {
-                new HitRegion(x, y, infoWidth, buttonHeight, ToggleInfoPanelId, "Toggle systems info panel")
-            };
+            return new HitRegion[0];
         }
 
+        public static HitRegion BuildInfoDrawerToggleRegion(int screenWidth, int screenHeight, bool showInfoPanel)
+        {
+            if (!BuildSurfaceProfile(screenWidth, screenHeight).AllowInfoPanel)
+                return new HitRegion(0, 0, 0, 0, string.Empty, string.Empty);
+
+            if (BuildSurfaceProfile(screenWidth, screenHeight).IsCanonical512Square)
+                return new HitRegion(462, showInfoPanel ? 298 : 482, 50, 14, ToggleInfoPanelId, showInfoPanel ? "Hide systems info panel" : "Show systems info panel");
+
+            var zones = BuildZones(screenWidth, screenHeight);
+            var metrics = BuildChromeMetrics(screenWidth, screenHeight);
+            int width = PanelButtonWidth(screenWidth, metrics, 50f);
+            int height = Math.Max(12, metrics.InfoHeaderHeight - 2);
+            int y = showInfoPanel ? Math.Max(0, BuildInfoPanelZone(zones.Center, true).Y - height / 2) : zones.Bottom.Y - height;
+            return new HitRegion(zones.Center.X, y, width, height, ToggleInfoPanelId, showInfoPanel ? "Hide systems info panel" : "Show systems info panel");
+        }
         public static HitRegion[] BuildInfoPanelScanRegions(int screenWidth, int screenHeight)
         {
             if (!BuildSurfaceProfile(screenWidth, screenHeight).AllowFullInfoPanel)
@@ -749,57 +810,131 @@ namespace GridSchematics
 
         public static HitRegion[] BuildInfoPanelBlockTabRegions(int screenWidth, int screenHeight, int itemCount, int scrollIndex)
         {
-            if (itemCount <= 0)
-                return new HitRegion[0];
+            var items = new List<BlockStackItem>();
+            for (int i = 0; i < itemCount; i++)
+                items.Add(new BlockStackItem { Name = "BLOCK" });
+            return BuildInfoPanelBlockTabRegions(screenWidth, screenHeight, items, scrollIndex, false);
+        }
+
+        public static HitRegion[] BuildInfoPanelBlockTabRegions(int screenWidth, int screenHeight, List<BlockStackItem> items, int scrollIndex, bool cargoPanel, bool manualSelectionAvailable = false, int manualGroupCount = 0)
+        {
+            int itemCount = items != null ? items.Count : 0;
+            if (manualSelectionAvailable && manualGroupCount <= 0)
+                manualGroupCount = 1;
+            if (manualGroupCount > 2)
+                manualGroupCount = 2;
 
             var zones = BuildZones(screenWidth, screenHeight);
             var profile = BuildSurfaceProfile(screenWidth, screenHeight);
-            var zone = BuildInfoPanelZone(zones.Center, profile.AllowFullInfoPanel);
+            var zone = cargoPanel ? BuildCargoInfoPanelZone(zones.Center, profile.AllowFullInfoPanel) : BuildInfoPanelZone(zones.Center, profile.AllowFullInfoPanel);
             var metrics = BuildChromeMetrics(screenWidth, screenHeight);
             int headerHeight = metrics.InfoHeaderHeight;
             var regions = new List<HitRegion>();
             int y = zone.Y;
-            int pinnedWidth = InfoPanelPinnedTabWidth(screenWidth, metrics);
-            int x = zone.X;
-            regions.Add(new HitRegion(x, y, pinnedWidth, headerHeight, InfoPanelAllTabId, "Show all blocks"));
-            x += pinnedWidth;
-            if (itemCount > 1)
+
+            if (cargoPanel && profile.IsCanonical512Square)
             {
-                regions.Add(new HitRegion(x, y, pinnedWidth, headerHeight, InfoPanelStackTabId, "Show selected stack"));
-                x += pinnedWidth;
+                const int slot = 64;
+                regions.Add(new HitRegion(0, y, slot, headerHeight, InfoPanelAllTabId, "Show all blocks"));
+                int x = slot;
+                if (manualGroupCount > 0)
+                {
+                    regions.Add(new HitRegion(x, y, slot, headerHeight, InfoPanelStackTabId, "Show group"));
+                    x += slot;
+                    if (manualGroupCount > 1)
+                    {
+                        regions.Add(new HitRegion(x, y, slot, headerHeight, InfoPanelGroup2TabId, "Show group 2"));
+                        x += slot;
+                    }
+                }
+                else if (itemCount > 1)
+                {
+                    regions.Add(new HitRegion(x, y, slot, headerHeight, InfoPanelStackTabId, "Show selected stack"));
+                    x += slot;
+                }
+
+                int stripWidth = Math.Max(0, zone.X + zone.Width - x);
+                if (stripWidth > 0)
+                    regions.Add(new HitRegion(x, y, stripWidth, headerHeight, InfoPanelBlockTabScrollId, "Scroll stack blocks"));
+
+                int visibleSlots = Math.Max(0, stripWidth / slot);
+                int maxScroll = Math.Max(0, itemCount - visibleSlots);
+                if (scrollIndex < 0)
+                    scrollIndex = 0;
+                if (scrollIndex > maxScroll)
+                    scrollIndex = maxScroll;
+                for (int slotIndex = 0; slotIndex < visibleSlots; slotIndex++)
+                {
+                    int itemIndex = scrollIndex + slotIndex;
+                    if (itemIndex >= itemCount)
+                        break;
+                    regions.Add(new HitRegion(x + slotIndex * slot, y, slot, headerHeight, InfoPanelBlockTabPrefix + itemIndex.ToString(), "Select block tab"));
+                }
+                return regions.ToArray();
             }
 
-            int stripX = x;
-            int stripWidth = zone.X + zone.Width - stripX;
-            if (stripWidth <= 0)
+            int pinnedWidth = InfoPanelPinnedTabWidth(screenWidth, metrics);
+            int cursorX = zone.X;
+            regions.Add(new HitRegion(cursorX, y, pinnedWidth, headerHeight, InfoPanelAllTabId, "Show all blocks"));
+            cursorX += pinnedWidth;
+            if (manualGroupCount > 0)
+            {
+                regions.Add(new HitRegion(cursorX, y, pinnedWidth, headerHeight, InfoPanelStackTabId, "Show group"));
+                cursorX += pinnedWidth;
+                if (manualGroupCount > 1)
+                {
+                    regions.Add(new HitRegion(cursorX, y, pinnedWidth, headerHeight, InfoPanelGroup2TabId, "Show group 2"));
+                    cursorX += pinnedWidth;
+                }
+            }
+            else if (itemCount > 1)
+            {
+                regions.Add(new HitRegion(cursorX, y, pinnedWidth, headerHeight, InfoPanelStackTabId, "Show selected stack"));
+                cursorX += pinnedWidth;
+            }
+
+            int stripX = cursorX;
+            int stripWidthDefault = zone.X + zone.Width - stripX;
+            if (stripWidthDefault <= 0)
                 return regions.ToArray();
 
-            regions.Add(new HitRegion(stripX, y, stripWidth, headerHeight, InfoPanelBlockTabScrollId, "Scroll stack blocks"));
+            regions.Add(new HitRegion(stripX, y, stripWidthDefault, headerHeight, InfoPanelBlockTabScrollId, "Scroll stack blocks"));
 
-            int tabWidth = InfoPanelBlockTabWidth(screenWidth, metrics);
-            int visibleCount = stripWidth / tabWidth;
-            if (visibleCount < 1)
-                visibleCount = 1;
-            int maxScroll = Math.Max(0, itemCount - visibleCount);
+            int maxDefaultScroll = Math.Max(0, itemCount - 1);
             if (scrollIndex < 0)
                 scrollIndex = 0;
-            if (scrollIndex > maxScroll)
-                scrollIndex = maxScroll;
+            if (scrollIndex > maxDefaultScroll)
+                scrollIndex = maxDefaultScroll;
 
-            for (int i = scrollIndex; i < itemCount && regions.Count < visibleCount + (itemCount > 1 ? 3 : 2); i++)
+            int cursor = stripX;
+            for (int i = scrollIndex; i < itemCount; i++)
             {
-                int tabX = stripX + (i - scrollIndex) * tabWidth;
-                if (tabX >= zone.X + zone.Width)
+                string label = items != null && items[i] != null ? items[i].Name : "BLOCK";
+                int width = cargoPanel ? pinnedWidth : InfoPanelBlockTabWidthForLabel(screenWidth, metrics, label);
+                if (cursor >= zone.X + zone.Width)
                     break;
-                int width = tabWidth;
-                if (tabX + width > zone.X + zone.Width)
-                    width = zone.X + zone.Width - tabX;
+                if (cursor + width > zone.X + zone.Width)
+                    width = zone.X + zone.Width - cursor;
                 if (width <= 0)
                     break;
-                regions.Add(new HitRegion(tabX, y, width, headerHeight, InfoPanelBlockTabPrefix + i, "Select block tab"));
+                regions.Add(new HitRegion(cursor, y, width, headerHeight, InfoPanelBlockTabPrefix + i.ToString(), "Select block tab"));
+                cursor += width;
             }
 
             return regions.ToArray();
+        }
+        public static int InfoPanelBlockTabWidthForLabel(int screenWidth, UiMetrics metrics, string label)
+        {
+            if (string.IsNullOrWhiteSpace(label))
+                label = "BLOCK";
+            int minWidth = InfoPanelBlockTabWidth(screenWidth, metrics);
+            int desired = (int)(label.Length * metrics.S(6.8f) + metrics.S(18f) + 0.5f);
+            int maxWidth = PanelButtonWidth(screenWidth, metrics, 128f);
+            if (desired < minWidth)
+                desired = minWidth;
+            if (desired > maxWidth)
+                desired = maxWidth;
+            return desired;
         }
 
         public static HitRegion[] BuildMenuPanelRegions(int screenWidth, int screenHeight, MenuPanel activeMenu)
@@ -1007,27 +1142,201 @@ namespace GridSchematics
             }
 
             int buttonHeight = metrics.BottomStripHeight;
-            int cargoWidth = PanelButtonWidth(screenWidth, metrics, 62f);
-            int enginesWidth = PanelButtonWidth(screenWidth, metrics, 72f);
-            int powerWidth = PanelButtonWidth(screenWidth, metrics, 62f);
-            int oxygenWidth = PanelButtonWidth(screenWidth, metrics, 72f);
-            const int gap = 0;
-            int x = 0;
-
             int y = screenHeight - metrics.BottomStripHeight;
-            int enginesX = x + cargoWidth + gap;
-            int powerX = enginesX + enginesWidth + gap;
-            int oxygenX = powerX + powerWidth + gap;
-
             return new[]
             {
-                new HitRegion(x, y, cargoWidth, buttonHeight, SchematicCargoId, "Cargo schematic layer"),
-                new HitRegion(enginesX, y, enginesWidth, buttonHeight, SchematicEnginesId, "Engines schematic layer"),
-                new HitRegion(powerX, y, powerWidth, buttonHeight, SchematicPowerId, "Power schematic layer"),
-                new HitRegion(oxygenX, y, oxygenWidth, buttonHeight, SchematicOxygenId, "Oxygen schematic layer")
+                new HitRegion(0, y, 64, buttonHeight, SchematicCargoId, "Cargo schematic layer"),
+                new HitRegion(64, y, 64, buttonHeight, SchematicEnginesId, "Engines schematic layer"),
+                new HitRegion(128, y, 64, buttonHeight, SchematicPowerId, "Power schematic layer"),
+                new HitRegion(192, y, 64, buttonHeight, SchematicOxygenId, "Atmosphere schematic layer")
             };
         }
+        public static HitRegion[] BuildCargoInfoPanelRegions(int screenWidth, int screenHeight, bool fullPanel, bool filterDropdownOpen, string rightPanelMode)
+        {
+            var profile = BuildSurfaceProfile(screenWidth, screenHeight);
+            if (!profile.AllowInfoPanel)
+                return new HitRegion[0];
 
+            if (profile.IsCanonical512Square && fullPanel)
+                return BuildCanonicalCargoInfoPanelRegions(filterDropdownOpen, !string.Equals(rightPanelMode, "ACTIONS", StringComparison.OrdinalIgnoreCase));
+
+            bool transferMode = !string.Equals(rightPanelMode, "ACTIONS", StringComparison.OrdinalIgnoreCase);
+            var zones = BuildZones(screenWidth, screenHeight);
+            var panel = BuildCargoInfoPanelZone(zones.Center, fullPanel && profile.AllowFullInfoPanel);
+            var baseMetrics = BuildMetrics(panel.Width, panel.Height);
+            var headerMetrics = BuildChromeMetrics(screenWidth, screenHeight);
+            int headerHeight = headerMetrics.InfoHeaderHeight;
+            int contentH = panel.Height - headerHeight - baseMetrics.SI(6f);
+            if (contentH <= baseMetrics.SI(24f))
+                return new HitRegion[0];
+
+            int outerPad = baseMetrics.SI(4f);
+            int outerGap = baseMetrics.SI(3f);
+            int panelW = (panel.Width - outerPad * 2 - outerGap * 2) / 3;
+            if (panelW < 16)
+                panelW = 16;
+            int panelH = Math.Max(1, contentH);
+            int x0 = panel.X + outerPad;
+            int x1 = x0 + panelW + outerGap;
+            int x2 = x1 + panelW + outerGap;
+            int y0 = panel.Y + headerHeight + outerPad;
+
+            int pad = ClampInt((int)(panelW * 0.035f + 0.5f), 6, 12);
+            int gap = ClampInt((int)(Math.Min(panelW, panelH) * 0.020f + 0.5f), 2, 6);
+            int widgetHeader = ClampInt((int)(panelH * 0.095f + 0.5f), 17, 28);
+            int rowH = ClampInt((int)(panelH * 0.074f + 0.5f), 13, 17);
+            int barH = ClampInt((int)(panelH * 0.060f + 0.5f), 15, 24);
+            int microH = ClampInt((int)(panelH * 0.038f + 0.5f), 9, 15);
+            var regions = new List<HitRegion>();
+
+            int loadPrimaryY = y0 + widgetHeader;
+            int loadPrimaryH = rowH + barH + gap + microH;
+            regions.Add(new HitRegion(x0, loadPrimaryY, panelW, loadPrimaryH, CargoInfoFocusAllId, "Highlight all cargo blocks"));
+            int reachY = loadPrimaryY + loadPrimaryH;
+            regions.Add(new HitRegion(x0, reachY, panelW / 2, rowH + microH, CargoInfoFocusReachableId, "Highlight reachable cargo blocks"));
+            regions.Add(new HitRegion(x0 + panelW / 2, reachY, panelW - panelW / 2, rowH + microH, CargoInfoFocusIsolatedId, "Highlight isolated cargo blocks"));
+            int satY = y0 + (int)(panelH * 0.58f);
+            regions.Add(new HitRegion(x0, satY, panelW, Math.Max(rowH, y0 + panelH - satY), CargoInfoFocusFullId, "Highlight saturated cargo blocks"));
+
+            string[] categories = new[] { "ORE", "INGOT", "COMPONENTS", "TOOLS", "CONSUMABLE" };
+            int filterWidth = Math.Max(panelW / 3, headerHeight * 5);
+            if (filterWidth > panelW - pad * 2)
+                filterWidth = panelW - pad * 2;
+            int filterX = x1 + panelW - pad - filterWidth;
+            regions.Add(new HitRegion(filterX, y0, filterWidth, widgetHeader, CargoInfoFilterToggleId, "Choose cargo filter"));
+            // Add precise controls again at the end because touch hit testing gives priority to later regions.
+            regions.Add(new HitRegion(96, 328, 76, 18, CargoInfoSendBlockToTransferId, "Send indicated cargo block to transfer"));
+            regions.Add(new HitRegion(248, 328, 84, 18, CargoInfoFilterToggleId, "Choose cargo filter"));
+            regions.Add(new HitRegion(178, 368, 40, 16, CargoInfoMixSortPrefix + "ITEM", "Sort cargo mix by item"));
+            regions.Add(new HitRegion(222, 368, 32, 16, CargoInfoMixSortPrefix + "QUANT", "Sort cargo mix by quantity"));
+            regions.Add(new HitRegion(258, 368, 34, 16, CargoInfoMixSortPrefix + "VOLUME", "Sort cargo mix by volume"));
+            regions.Add(new HitRegion(296, 368, 30, 16, CargoInfoMixSortPrefix + "MASS", "Sort cargo mix by mass"));
+            regions.Add(new HitRegion(250, 478, 92, 20, CargoInfoMixAddToQuotaId, "Add selected cargo mix rows to transfer quota"));
+            regions.Add(new HitRegion(360, 328, 78, 18, CargoInfoTransferModeId, "Show cargo transfer quota"));
+            regions.Add(new HitRegion(438, 328, 70, 18, CargoInfoActionsModeId, "Show selected block actions"));
+            if (transferMode)
+            {
+                regions.Add(new HitRegion(348, 344, 50, 18, CargoInfoTransferSourceSelectId, "Set transfer source selection"));
+                regions.Add(new HitRegion(398, 344, 108, 18, CargoInfoTransferSourceViewId, "Show transfer source cargo mix"));
+                regions.Add(new HitRegion(348, 374, 50, 18, CargoInfoTransferDestSelectId, "Set transfer destination selection"));
+                regions.Add(new HitRegion(398, 374, 108, 18, CargoInfoTransferDestViewId, "Show transfer destination cargo mix"));
+                regions.Add(new HitRegion(456, 356, 50, 18, CargoInfoTransferDirectionId, "Reverse transfer direction"));
+                for (int i = 0; i < 4; i++)
+                {
+                    regions.Add(new HitRegion(348, 416 + i * 16, 70, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":row", "Select transfer quota row"));
+                    regions.Add(new HitRegion(454, 416 + i * 16, 13, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":up", "Increase transfer quota amount"));
+                    regions.Add(new HitRegion(468, 416 + i * 16, 13, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":down", "Decrease transfer quota amount"));
+                    regions.Add(new HitRegion(482, 416 + i * 16, 16, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":remove", "Remove transfer quota item"));
+                }
+                regions.Add(new HitRegion(344, 478, 84, 20, CargoInfoTransferClearId, "Clear transfer quota"));
+                regions.Add(new HitRegion(420, 478, 92, 20, CargoInfoTransferNowId, "Transfer cargo quota now"));
+            }
+
+            if (filterDropdownOpen)
+            {
+                for (int i = 0; i < categories.Length; i++)
+                    regions.Add(new HitRegion(filterX, y0 + widgetHeader + rowH * i, filterWidth, rowH, CargoInfoFilterPrefix + categories[i], "Filter cargo mix"));
+            }
+
+            int stripY = y0 + widgetHeader + gap + rowH;
+            int stripH = Math.Max(barH + gap, rowH);
+            int each = Math.Max(1, panelW / categories.Length);
+            for (int i = 0; i < categories.Length; i++)
+            {
+                int w = i == categories.Length - 1 ? panelW - each * i : each;
+                regions.Add(new HitRegion(x1 + each * i, stripY, w, stripH, CargoInfoFilterPrefix + categories[i], "Filter cargo mix"));
+            }
+
+            regions.Add(new HitRegion(x2 + pad, y0 + widgetHeader, Math.Max(1, panelW - pad * 2), Math.Max(1, panelH - widgetHeader - pad), CargoInfoActionScrollId, "Scroll selected cargo actions"));
+            int rowY = y0 + widgetHeader + gap;
+            int visibleRows = Math.Max(1, (y0 + panelH - rowY - pad) / rowH);
+            if (visibleRows > 9)
+                visibleRows = 9;
+            for (int i = 0; i < visibleRows; i++)
+                regions.Add(new HitRegion(x2 + pad, rowY + rowH * i, Math.Max(1, panelW - pad * 2), rowH, CargoInfoActionPrefix + i.ToString(), "Apply selected cargo block action"));
+
+            return regions.ToArray();
+        }
+        static HitRegion[] BuildCanonicalCargoInfoPanelRegions(bool filterDropdownOpen, bool transferMode)
+        {
+            var regions = new List<HitRegion>();
+            regions.Add(new HitRegion(0, 428, 168, 68, CargoInfoBlockScrollId, "Scroll cargo block bars"));
+            regions.Add(new HitRegion(104, 328, 64, 17, CargoInfoSendBlockToTransferId, "Send indicated cargo block to transfer"));
+            for (int i = 0; i < 13; i++)
+                regions.Add(new HitRegion(6 + i * 12, 448, 10, 36, CargoInfoBlockPrefix + i.ToString(), "Select cargo block"));
+
+            regions.Add(new HitRegion(168, 344, 176, 144, CargoInfoMixScrollId, "Scroll cargo mix rows"));
+            regions.Add(new HitRegion(248, 328, 84, 16, CargoInfoFilterToggleId, "Choose cargo filter"));
+            regions.Add(new HitRegion(178, 368, 40, 16, CargoInfoMixSortPrefix + "ITEM", "Sort cargo mix by item"));
+            regions.Add(new HitRegion(222, 368, 32, 16, CargoInfoMixSortPrefix + "QUANT", "Sort cargo mix by quantity"));
+            regions.Add(new HitRegion(258, 368, 34, 16, CargoInfoMixSortPrefix + "VOLUME", "Sort cargo mix by volume"));
+            regions.Add(new HitRegion(296, 368, 30, 16, CargoInfoMixSortPrefix + "MASS", "Sort cargo mix by mass"));
+            for (int i = 0; i < 6; i++)
+                regions.Add(new HitRegion(176, 384 + i * 16, 152, 16, CargoInfoMixRowPrefix + i.ToString(), "Select cargo mix row"));
+            regions.Add(new HitRegion(254, 480, 86, 16, CargoInfoMixAddToQuotaId, "Add selected cargo mix rows to transfer quota"));
+
+            regions.Add(new HitRegion(360, 328, 78, 16, CargoInfoTransferModeId, "Show cargo transfer quota"));
+            regions.Add(new HitRegion(438, 328, 70, 16, CargoInfoActionsModeId, "Show selected block actions"));
+            regions.Add(new HitRegion(344, 344, 168, 144, CargoInfoActionScrollId, transferMode ? "Scroll transfer quota" : "Scroll selected cargo actions"));
+            if (transferMode)
+            {
+                regions.Add(new HitRegion(352, 344, 46, 18, CargoInfoTransferSourceSelectId, "Set transfer source selection"));
+                regions.Add(new HitRegion(398, 344, 108, 18, CargoInfoTransferSourceViewId, "Show transfer source cargo mix"));
+                regions.Add(new HitRegion(352, 374, 46, 18, CargoInfoTransferDestSelectId, "Set transfer destination selection"));
+                regions.Add(new HitRegion(398, 374, 108, 18, CargoInfoTransferDestViewId, "Show transfer destination cargo mix"));
+                regions.Add(new HitRegion(456, 356, 50, 18, CargoInfoTransferDirectionId, "Reverse transfer direction"));
+                regions.Add(new HitRegion(348, 480, 76, 16, CargoInfoTransferClearId, "Clear transfer quota"));
+                regions.Add(new HitRegion(424, 480, 86, 16, CargoInfoTransferNowId, "Transfer cargo quota now"));
+                for (int i = 0; i < 4; i++)
+                {
+                    regions.Add(new HitRegion(348, 416 + i * 16, 70, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":row", "Select transfer quota row"));
+                    regions.Add(new HitRegion(454, 416 + i * 16, 13, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":up", "Increase transfer quota amount"));
+                    regions.Add(new HitRegion(468, 416 + i * 16, 13, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":down", "Decrease transfer quota amount"));
+                    regions.Add(new HitRegion(482, 416 + i * 16, 16, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":remove", "Remove transfer quota item"));
+                }
+            }
+            else
+            {
+                for (int i = 0; i < 9; i++)
+                    regions.Add(new HitRegion(352, 346 + i * 14, 140, 14, CargoInfoActionPrefix + i.ToString(), "Apply selected cargo block action"));
+            }
+            // Add precise controls again at the end because touch hit testing gives priority to later regions.
+            regions.Add(new HitRegion(96, 328, 76, 18, CargoInfoSendBlockToTransferId, "Send indicated cargo block to transfer"));
+            regions.Add(new HitRegion(248, 328, 84, 18, CargoInfoFilterToggleId, "Choose cargo filter"));
+            regions.Add(new HitRegion(178, 368, 40, 16, CargoInfoMixSortPrefix + "ITEM", "Sort cargo mix by item"));
+            regions.Add(new HitRegion(222, 368, 32, 16, CargoInfoMixSortPrefix + "QUANT", "Sort cargo mix by quantity"));
+            regions.Add(new HitRegion(258, 368, 34, 16, CargoInfoMixSortPrefix + "VOLUME", "Sort cargo mix by volume"));
+            regions.Add(new HitRegion(296, 368, 30, 16, CargoInfoMixSortPrefix + "MASS", "Sort cargo mix by mass"));
+            regions.Add(new HitRegion(250, 478, 92, 20, CargoInfoMixAddToQuotaId, "Add selected cargo mix rows to transfer quota"));
+            regions.Add(new HitRegion(360, 328, 78, 18, CargoInfoTransferModeId, "Show cargo transfer quota"));
+            regions.Add(new HitRegion(438, 328, 70, 18, CargoInfoActionsModeId, "Show selected block actions"));
+            if (transferMode)
+            {
+                regions.Add(new HitRegion(348, 344, 50, 18, CargoInfoTransferSourceSelectId, "Set transfer source selection"));
+                regions.Add(new HitRegion(398, 344, 108, 18, CargoInfoTransferSourceViewId, "Show transfer source cargo mix"));
+                regions.Add(new HitRegion(348, 374, 50, 18, CargoInfoTransferDestSelectId, "Set transfer destination selection"));
+                regions.Add(new HitRegion(398, 374, 108, 18, CargoInfoTransferDestViewId, "Show transfer destination cargo mix"));
+                regions.Add(new HitRegion(456, 356, 50, 18, CargoInfoTransferDirectionId, "Reverse transfer direction"));
+                for (int i = 0; i < 4; i++)
+                {
+                    regions.Add(new HitRegion(348, 416 + i * 16, 70, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":row", "Select transfer quota row"));
+                    regions.Add(new HitRegion(454, 416 + i * 16, 13, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":up", "Increase transfer quota amount"));
+                    regions.Add(new HitRegion(468, 416 + i * 16, 13, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":down", "Decrease transfer quota amount"));
+                    regions.Add(new HitRegion(482, 416 + i * 16, 16, 16, CargoInfoTransferQuotaPrefix + i.ToString() + ":remove", "Remove transfer quota item"));
+                }
+                regions.Add(new HitRegion(344, 478, 84, 20, CargoInfoTransferClearId, "Clear transfer quota"));
+                regions.Add(new HitRegion(420, 478, 92, 20, CargoInfoTransferNowId, "Transfer cargo quota now"));
+            }
+
+            if (filterDropdownOpen)
+            {
+                string[] dropdownCategories = new[] { "ALL", "ORE", "INGOT", "COMPONENTS", "TOOLS", "CONSUMABLE" };
+                for (int i = 0; i < dropdownCategories.Length; i++)
+                    regions.Add(new HitRegion(248, 344 + i * 16, 84, 16, CargoInfoFilterPrefix + dropdownCategories[i], "Filter cargo mix"));
+            }
+
+            return regions.ToArray();
+        }
         public static HitRegion[] BuildSegmentScanControlRegions(ScreenZone zone)
         {
             var metrics = BuildMetrics(zone.Width, zone.Height);
@@ -1204,3 +1513,37 @@ namespace GridSchematics
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

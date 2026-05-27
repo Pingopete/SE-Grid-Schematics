@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using VRage.Game.ModAPI;
 using VRage.Game.GUI.TextPanel;
@@ -367,7 +367,13 @@ namespace GridSchematics
                 bool active = showInfoPanel && infoPanelMode == InfoPanelMode.Systems;
                 DrawViewButton(frame, region, "INFO", active, hover);
             }
-        }
+               var drawerToggle = UiLayout.BuildInfoDrawerToggleRegion(screenWidth, screenHeight, showInfoPanel && infoPanelMode == InfoPanelMode.Systems);
+            if (!(showInfoPanel && infoPanelMode == InfoPanelMode.Systems) && !string.IsNullOrEmpty(drawerToggle.Id) && drawerToggle.Width > 0 && drawerToggle.Height > 0)
+            {
+                bool hover = string.Equals(drawerToggle.Id, hoverRegionId, StringComparison.Ordinal);
+                DrawViewButton(frame, drawerToggle, showInfoPanel && infoPanelMode == InfoPanelMode.Systems ? "HIDE" : "SHOW", false, hover);
+            }
+     }
 
         static void DrawBottomPanelFillerButtons(MySpriteDrawFrame frame, int screenWidth, int screenHeight, HitRegion[] primaryRegions, HitRegion[] secondaryRegions)
         {
@@ -1178,3 +1184,6 @@ namespace GridSchematics
         }
     }
 }
+
+
+

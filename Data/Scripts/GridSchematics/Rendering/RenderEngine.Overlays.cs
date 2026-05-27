@@ -124,7 +124,7 @@ namespace GridSchematics
             {
                 bool showFillBars = ui == null || ui.ShowFillBars;
                 float fillAlphaScale = ui == null ? 1f : ui.FillBarsAlphaScale;
-                DrawCargoOverlayGroup(frame, transform, shipGrid, groups[i], showFillBars, fillAlphaScale, occludeConveyorUnderFillBars && showFillBars);
+                DrawCargoOverlayGroup(frame, transform, shipGrid, groups[i], showFillBars, fillAlphaScale, occludeConveyorUnderFillBars && showFillBars, "Cargo", ui);
             }
 
             DrawOverlayInteractionUi(frame, center, transform, shipGrid, groups, input, "Cargo", ui);
@@ -154,7 +154,7 @@ namespace GridSchematics
             {
                 bool showFillBars = ui == null || ui.ShowFillBars;
                 float fillAlphaScale = ui == null ? 1f : ui.FillBarsAlphaScale;
-                DrawCargoOverlayGroup(frame, transform, shipGrid, groups[i], showFillBars, fillAlphaScale, occludeConveyorUnderFillBars && showFillBars);
+                DrawCargoOverlayGroup(frame, transform, shipGrid, groups[i], showFillBars, fillAlphaScale, occludeConveyorUnderFillBars && showFillBars, "Engines", ui);
             }
 
             DrawOverlayInteractionUi(frame, center, transform, shipGrid, groups, input, "Engines", ui);
@@ -215,7 +215,7 @@ namespace GridSchematics
             {
                 bool showFillBars = ui == null || ui.ShowFillBars;
                 float fillAlphaScale = ui == null ? 1f : ui.FillBarsAlphaScale;
-                DrawCargoOverlayGroup(frame, transform, shipGrid, groups[i], showFillBars, fillAlphaScale, occludeConveyorUnderFillBars && showFillBars);
+                DrawCargoOverlayGroup(frame, transform, shipGrid, groups[i], showFillBars, fillAlphaScale, occludeConveyorUnderFillBars && showFillBars, "Power", ui);
             }
 
             DrawOverlayInteractionUi(frame, center, transform, shipGrid, groups, input, "Power", ui);
@@ -312,3 +312,6 @@ namespace GridSchematics
         }
     }
 }
+
+
+

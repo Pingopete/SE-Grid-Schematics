@@ -27,6 +27,7 @@ namespace GridSchematics
         const string ConnectorSideIconTexture = "GridSchematics_Icon_ConnectorSide";
         const string SorterIconTexture = "GridSchematics_Icon_Sorter";
         const string CalibrationTextFontId = "GridSchematics_Bahnschrift";
+        const string InfoDrawerTextFontId = "GridSchematics_MonoM";
         static float CurrentHullScanAlpha = 1f;
         static float CurrentHullScanBrightness = 1f;
         static float CurrentShipBorderOpacity = 1f;
@@ -39,8 +40,8 @@ namespace GridSchematics
         static int CurrentConveyorHue;
         static bool CurrentBlocksOccludeConveyors = true;
         static bool CurrentShowConnectedNetworks;
-        static string CurrentUiFont = "DEBUG";
-        static string CurrentTextFontId = "Debug";
+        static string CurrentUiFont = "MOZARTGLOW";
+        static string CurrentTextFontId = "GridSchematics_MozartGlow";
         static float CurrentButtonTextScaleMultiplier = 1f;
         static float CurrentButtonTextBaselineNudge = 0f;
         static int CurrentPerfSpriteCount;
@@ -76,6 +77,7 @@ namespace GridSchematics
                 CurrentPerfTextCount++;
             if (CurrentSpriteViewportOrigin.X != 0f || CurrentSpriteViewportOrigin.Y != 0f)
                 OffsetSpritePosition(ref sprite, CurrentSpriteViewportOrigin);
+            CaptureLayoutSnapshotSprite(sprite);
             frame.Add(sprite);
         }
 
@@ -310,7 +312,7 @@ namespace GridSchematics
                 bool allowInfoPanel = app.SupportsInfoPanel;
                 bool fullInfoPanel = app.SupportsFullInfoPanel;
                 var infoPanelZone = allowInfoPanel && app.Ui.ShowInfoPanel && !app.Ui.SegmentMode && !app.Ui.ChromeHidden
-                    ? BuildInfoPanelZone(zones.Center, fullInfoPanel)
+                    ? BuildInfoPanelZone(zones.Center, app, fullInfoPanel)
                     : new ScreenZone(ScreenZoneType.CenterViewport, 0, 0, 0, 0);
                 var mapZone = allowInfoPanel && app.Ui.ShowInfoPanel && !app.Ui.SegmentMode && !app.Ui.ChromeHidden
                     ? BuildInfoMapZone(zones.Center, infoPanelZone)
@@ -318,6 +320,7 @@ namespace GridSchematics
                 app.Ui.RenderViewportZone = mapZone;
                 var renderCenter = UiLayout.BuildTransformedCenterZone(mapZone, app.Ui.ZoomLevel, app.Ui.PanX, app.Ui.PanY);
                 BeginPerfFrame();
+                BeginLayoutSnapshotFrame(app, surface, size);
 
                 using (var frame = surface.DrawFrame())
                 {
@@ -477,10 +480,12 @@ namespace GridSchematics
             }
             catch
             {
+                CancelLayoutSnapshotFrame();
                 return false;
             }
             finally
             {
+                CompleteLayoutSnapshotFrame();
                 CurrentSpriteViewportOrigin = Vector2.Zero;
                 CurrentDynamicTextFitEnabled = false;
             }
@@ -1370,27 +1375,35 @@ namespace GridSchematics
 
             ui.PreviewBlockStackItems.Clear();
 
-            if (shipGrid == null || shipGrid.IsEmpty || input == null || !input.IsAvailable || !input.IsCursorOnScreen)
-                return;
-            if (ui.ShowInfoPanel)
-                return;
-            if (!IsPointInZone(input.CursorPosition, mapZone))
+            if (input == null || !input.IsAvailable || !input.IsCursorOnScreen)
                 return;
 
-            var transform = GetOrBuildProjectionTransform(shipGrid, renderZone, rotationSteps);
-            if (!transform.IsValid || transform.CellSize <= 0f)
-                return;
-
-            float localX;
-            float localY;
-            if (!transform.TryScreenToLocal(input.CursorPosition, out localX, out localY))
-                return;
-
-            int projectedX = shipGrid.Min2D.X + (int)Math.Floor(localX);
-            int projectedY = shipGrid.Max2D.Y - (int)Math.Floor(localY);
-            BuildBlockStackItems(shipGrid, projectedX, projectedY, ui.PreviewBlockStackItems);
-            if (ui.PreviewBlockStackItems.Count == 0 && ui.ActiveOverlay != OverlayMode.None)
-                BuildOverlayBlockStackItems(ui, input.CursorPosition, ui.PreviewBlockStackItems);
+            if (shipGrid != null && !shipGrid.IsEmpty && IsPointInZone(input.CursorPosition, mapZone))
+            {
+                var transform = GetOrBuildProjectionTransform(shipGrid, renderZone, rotationSteps);
+                if (transform.IsValid && transform.CellSize > 0f)
+                {
+                    if (ui.ActiveOverlay == OverlayMode.None)
+                    {
+                        float localX;
+                        float localY;
+                        if (transform.TryScreenToLocal(input.CursorPosition, out localX, out localY))
+                        {
+                            int projectedX = shipGrid.Min2D.X + (int)Math.Floor(localX);
+                            int projectedY = shipGrid.Max2D.Y - (int)Math.Floor(localY);
+                            BuildBlockStackItems(shipGrid, projectedX, projectedY, ui.PreviewBlockStackItems);
+                        }
+                    }
+                    else
+                    {
+                        BuildOverlayBlockStackItems(ui, input.CursorPosition, ui.PreviewBlockStackItems);
+                    }
+                }
+            }
+            else
+            {
+                BuildUiBlockStackPreviewItems(ui, input.HoverRegionId ?? string.Empty, ui.PreviewBlockStackItems);
+            }
 
             if (ui.PreviewBlockStackItems.Count == 0)
                 return;
@@ -1407,9 +1420,100 @@ namespace GridSchematics
             if (ui.PreviewBlockStackIndex < 0)
                 ui.PreviewBlockStackIndex = 0;
 
-            DrawBlockStackPreview(frame, mapZone, ui.PreviewBlockStackItems, -1);
+            DrawBlockStackPreview(frame, renderZone, ui.PreviewBlockStackItems, -1);
         }
 
+        static void BuildUiBlockStackPreviewItems(UiState ui, string hoverId, List<BlockStackItem> items)
+        {
+            if (ui == null || items == null || string.IsNullOrEmpty(hoverId))
+                return;
+
+            if (string.Equals(hoverId, UiLayout.InfoPanelAllTabId, StringComparison.Ordinal))
+                return;
+
+            if (string.Equals(hoverId, UiLayout.InfoPanelStackTabId, StringComparison.Ordinal))
+            {
+                var source = ui.ManualSelectedBlockItems != null && ui.ManualSelectedBlockItems.Count > 0 ? ui.ManualSelectedBlockItems : ui.SelectedBlockStackItems;
+                AddBlockStackPreviewItems(source, items, "ui:group:1");
+                return;
+            }
+
+            if (string.Equals(hoverId, UiLayout.InfoPanelGroup2TabId, StringComparison.Ordinal))
+            {
+                AddBlockStackPreviewItems(ui.ManualSelectedBlockItems2, items, "ui:group:2");
+                return;
+            }
+
+            if (hoverId.StartsWith(UiLayout.InfoPanelBlockTabPrefix, StringComparison.Ordinal))
+            {
+                int index;
+                if (int.TryParse(hoverId.Substring(UiLayout.InfoPanelBlockTabPrefix.Length), out index) && ui.SelectedBlockStackItems != null && index >= 0 && index < ui.SelectedBlockStackItems.Count)
+                    AddBlockStackPreviewItem(ui.SelectedBlockStackItems[index], items, "ui:tab:" + index.ToString());
+                return;
+            }
+
+            if (string.Equals(hoverId, UiLayout.CargoInfoTransferSourceSelectId, StringComparison.Ordinal) ||
+                string.Equals(hoverId, UiLayout.CargoInfoTransferSourceViewId, StringComparison.Ordinal))
+            {
+                AddBlockStackPreviewItems(ui.CargoTransferSourceItems, items, "ui:transfer:source");
+                return;
+            }
+
+            if (string.Equals(hoverId, UiLayout.CargoInfoTransferDestSelectId, StringComparison.Ordinal) ||
+                string.Equals(hoverId, UiLayout.CargoInfoTransferDestViewId, StringComparison.Ordinal))
+            {
+                AddBlockStackPreviewItems(ui.CargoTransferDestItems, items, "ui:transfer:dest");
+                return;
+            }
+
+            if (hoverId.StartsWith(UiLayout.CargoInfoMixRowPrefix, StringComparison.Ordinal))
+            {
+                int row;
+                if (!int.TryParse(hoverId.Substring(UiLayout.CargoInfoMixRowPrefix.Length), out row))
+                    return;
+                var summary = ui.CachedCargoSummary;
+                var rows = BuildCargoMixRowsForRender(summary, summary != null ? summary.Filter : ui.CargoInfoFilter);
+                string sortKey = string.IsNullOrEmpty(ui.CargoMixSortKey) ? "QUANT" : ui.CargoMixSortKey;
+                int sortDirection = ui.CargoMixSortDirection == 2 ? 2 : 1;
+                rows.Sort(delegate(CargoPanelItem a, CargoPanelItem b)
+                {
+                    int result = CompareCargoMixItems(a, b, sortKey);
+                    return sortDirection == 2 ? -result : result;
+                });
+                int index = ui.CargoMixScrollIndex + row;
+                if (index >= 0 && index < rows.Count && rows[index] != null)
+                {
+                    items.Add(new BlockStackItem
+                    {
+                        Id = "ui:cargo:item:" + CargoPanelItemKey(rows[index]),
+                        Name = rows[index].Name,
+                        Depth = 0
+                    });
+                }
+            }
+        }
+
+        static void AddBlockStackPreviewItems(List<BlockStackItem> source, List<BlockStackItem> items, string idPrefix)
+        {
+            if (source == null || items == null)
+                return;
+            for (int i = 0; i < source.Count; i++)
+                AddBlockStackPreviewItem(source[i], items, idPrefix + ":" + i.ToString());
+        }
+
+        static void AddBlockStackPreviewItem(BlockStackItem source, List<BlockStackItem> items, string id)
+        {
+            if (source == null || items == null)
+                return;
+            items.Add(new BlockStackItem
+            {
+                Id = id,
+                Name = source.Name,
+                Block = source.Block,
+                Projected = source.Projected,
+                Depth = source.Depth
+            });
+        }
         static void BuildOverlayBlockStackItems(UiState ui, Vector2 cursorPosition, List<BlockStackItem> items)
         {
             if (ui == null || ui.OverlayBlockRegions == null || items == null)
@@ -3369,7 +3473,7 @@ namespace GridSchematics
             return value;
         }
 
-        static void DrawCargoOverlayGroup(MySpriteDrawFrame frame, ProjectionTransform transform, ShipGrid shipGrid, CargoOverlayGroup group, bool showFillBars, float fillAlphaScale, bool occludeConveyorUnderFillBars)
+        static void DrawCargoOverlayGroup(MySpriteDrawFrame frame, ProjectionTransform transform, ShipGrid shipGrid, CargoOverlayGroup group, bool showFillBars, float fillAlphaScale, bool occludeConveyorUnderFillBars, string modeName, UiState ui)
         {
             float localX0 = group.Min.X - shipGrid.Min2D.X;
             float localX1 = group.Max.X - shipGrid.Min2D.X + 1f;
@@ -3405,6 +3509,13 @@ namespace GridSchematics
             fill = ScaleAlpha(fill, CurrentSchematicAlpha);
             border = ScaleAlpha(border, Math.Max(0.35f, CurrentSchematicAlpha));
             occlusion = ScaleAlpha(occlusion, Math.Max(0.35f, CurrentSchematicAlpha));
+            if (HasActiveOverlaySelectionFocus(ui) && !OverlayGroupMatchesActiveSelectionFocus(group, ui))
+            {
+                empty = ScaleAlpha(empty, 0.30f);
+                fill = ScaleAlpha(fill, 0.30f);
+                border = ScaleAlpha(border, 0.30f);
+                occlusion = ScaleAlpha(occlusion, 0.30f);
+            }
             fillAlphaScale = Clamp01(fillAlphaScale);
             empty = ScaleAlpha(empty, fillAlphaScale);
             fill = ScaleAlpha(fill, fillAlphaScale);
@@ -3428,6 +3539,84 @@ namespace GridSchematics
             }
         }
 
+        static bool HasActiveOverlaySelectionFocus(UiState ui)
+        {
+            if (ui == null)
+                return false;
+            if (ui.CargoTransferSelectionActive)
+                return (ui.CargoTransferSourceItems != null && ui.CargoTransferSourceItems.Count > 0) || (ui.CargoTransferDestItems != null && ui.CargoTransferDestItems.Count > 0);
+            return ui.SelectedBlockStackItems != null && ui.SelectedBlockStackItems.Count > 0 && ui.SelectedBlockStackIndex != UiState.SelectedBlockStackAllIndex;
+        }
+
+        static bool OverlayGroupMatchesActiveSelectionFocus(CargoOverlayGroup group, UiState ui)
+        {
+            if (group == null || ui == null)
+                return false;
+            if (ui.CargoTransferSelectionActive)
+            {
+                if (OverlayGroupMatchesBlockStackItems(group, ui.CargoTransferSourceItems))
+                    return true;
+                if (OverlayGroupMatchesBlockStackItems(group, ui.CargoTransferDestItems))
+                    return true;
+                return false;
+            }
+            if (ui.SelectedBlockStackItems != null && ui.SelectedBlockStackItems.Count > 0 && ui.SelectedBlockStackIndex != UiState.SelectedBlockStackAllIndex)
+                return OverlayGroupMatchesSelectedBlockStack(group, ui);
+            return false;
+        }
+
+        static bool OverlayGroupMatchesBlockStackItems(CargoOverlayGroup group, List<BlockStackItem> items)
+        {
+            if (group == null || items == null || items.Count == 0)
+                return false;
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (OverlayGroupContainsBlock(group, items[i] != null ? items[i].Block : null))
+                    return true;
+            }
+            return false;
+        }
+        static bool TryResolveOverlayGroupHighlightColor(CargoOverlayGroup group, string modeName, UiState ui, out Color color)
+        {
+            color = Color.Transparent;
+            return false;
+        }
+
+        static bool OverlayGroupMatchesSelectedBlockStack(CargoOverlayGroup group, UiState ui)
+        {
+            if (group == null || group.Blocks == null || ui == null || ui.SelectedBlockStackItems == null || ui.SelectedBlockStackItems.Count == 0)
+                return false;
+            if (ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex)
+                return false;
+
+            if (ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex)
+            {
+                for (int i = 0; i < ui.SelectedBlockStackItems.Count; i++)
+                {
+                    if (OverlayGroupContainsBlock(group, ui.SelectedBlockStackItems[i] != null ? ui.SelectedBlockStackItems[i].Block : null))
+                        return true;
+                }
+                return false;
+            }
+
+            if (ui.SelectedBlockStackIndex < 0 || ui.SelectedBlockStackIndex >= ui.SelectedBlockStackItems.Count)
+                return false;
+            return OverlayGroupContainsBlock(group, ui.SelectedBlockStackItems[ui.SelectedBlockStackIndex] != null ? ui.SelectedBlockStackItems[ui.SelectedBlockStackIndex].Block : null);
+        }
+
+        static bool OverlayGroupContainsBlock(CargoOverlayGroup group, IMyCubeBlock block)
+        {
+            if (group == null || group.Blocks == null || block == null)
+                return false;
+            long entityId = block.EntityId;
+            for (int i = 0; i < group.Blocks.Count; i++)
+            {
+                var candidate = group.Blocks[i];
+                if (candidate != null && candidate.EntityId == entityId)
+                    return true;
+            }
+            return false;
+        }
         static void DrawSchematicOcclusionMask(MySpriteDrawFrame frame, Vector2 center, Vector2 size, Color color)
         {
             var mask = new Color(color.R, color.G, color.B, color.A);
@@ -3514,10 +3703,6 @@ namespace GridSchematics
                     DrawInsetOverlaySelectionBorder(frame, groupCenter, groupSize, UiAccentSoft);
                 }
 
-                if (string.Equals(ui.SelectedOverlayBlockId, id, StringComparison.Ordinal))
-                {
-                    DrawInsetOverlaySelectionBorder(frame, groupCenter, groupSize, UiSelected);
-                }
             }
 
             // Selected overlay details now live in the unified systems info drawer.
@@ -4224,7 +4409,7 @@ namespace GridSchematics
             switch (colorName.ToUpperInvariant())
             {
                 case "GREEN":
-                    return new Color(50, 230, 85, 255);
+                    return new Color(0, 255, 64, 255);
                 case "MAGENTA":
                     return new Color(255, 90, 220, 255);
                 case "YELLOW":
@@ -4331,7 +4516,7 @@ namespace GridSchematics
 
         static Color ResolveStorageSchematicColor()
         {
-            return SetPaletteColorHue(ResolveSchematicColor(CurrentStorageColor, new Color(50, 230, 85, 255)), CurrentSchematicMainHue, 1f, 1f, 1f);
+            return SetPaletteColorHue(ResolveSchematicColor(CurrentStorageColor, new Color(0, 255, 64, 255)), CurrentSchematicMainHue, 1f, 1f, 1f);
         }
 
         static Color ResolveSecondarySchematicColor()
@@ -5400,3 +5585,11 @@ namespace GridSchematics
         }
     }
 }
+
+
+
+
+
+
+
+

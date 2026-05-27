@@ -95,6 +95,8 @@ namespace GridSchematics
             RegisterPanelDiscoveryPolygonDebugCommand();
             RegisterPanelCalibrationDebugCommand();
             RegisterPanelCursorDepthOffsetDebugCommand();
+            RegisterPanelLayoutSnapshotCommand();
+            RegisterPanelLiveMockupCommand();
         }
 
         public override void UpdateAfterSimulation()
@@ -121,6 +123,7 @@ namespace GridSchematics
                 _apps[i].Update(_tickCounter);
             }
 
+            UpdatePanelLiveMockup(_tickCounter);
             UpdatePanelInteractionInputBlocker();
         }
 
@@ -154,6 +157,9 @@ namespace GridSchematics
             UnregisterPanelDiscoveryPolygonDebugCommand();
             UnregisterPanelCalibrationDebugCommand();
             UnregisterPanelCursorDepthOffsetDebugCommand();
+            UnregisterPanelLayoutSnapshotCommand();
+            UnregisterPanelLiveMockupCommand();
+            ClearPanelLiveMockup();
             SetPanelInteractionInputBlocked(false, false);
             if (_panelInteractionInputBlocker != null)
             {
@@ -171,6 +177,8 @@ namespace GridSchematics
             RegisterPanelDiscoveryPolygonDebugCommand();
             RegisterPanelCalibrationDebugCommand();
             RegisterPanelCursorDepthOffsetDebugCommand();
+            RegisterPanelLayoutSnapshotCommand();
+            RegisterPanelLiveMockupCommand();
             RefreshApps();
         }
 
@@ -459,11 +467,11 @@ namespace GridSchematics
 
         static void DrawPanelCursorTexture(PanelCursorWorldDrawData cursor, Vector3D normal, Color color, bool enlarged)
         {
-            const double cursorSize = PanelDiscoveryCursorHalfSize * 0.98;
+            const double cursorSize = PanelDiscoveryCursorHalfSize * 1.96;
             const double cursorSurfaceOffset = 0.0008;
             const double hotspotX = 0.16;
             const double hotspotY = 0.18;
-            const double textureRotation = 1.3962634015954636;
+            const double textureRotation = 0.0;
 
             double width = enlarged ? cursorSize * 1.22 : cursorSize;
             double height = width;
@@ -2005,3 +2013,4 @@ namespace GridSchematics
         }
     }
 }
+

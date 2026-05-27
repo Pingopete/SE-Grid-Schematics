@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using VRageMath;
 
 namespace GridSchematics
@@ -22,7 +22,7 @@ namespace GridSchematics
         static Color UiText = new Color(245, 248, 250, 255);
         static Color UiTextMuted = new Color(182, 195, 202, 225);
         static Color UiSelected = new Color(190, 160, 45, 230);
-        static Color UiWarning = new Color(210, 80, 80, 220);
+        static Color UiWarning = new Color(255, 0, 0, 255);
         static Color UiDebugGridMajor = new Color(58, 82, 96, 30);
         static Color UiDebugGridMinor = new Color(42, 62, 74, 16);
         static Color UiReferenceAxis = new Color(112, 210, 255, 35);
@@ -357,3 +357,4 @@ namespace GridSchematics
         }
     }
 }
+

@@ -45,7 +45,7 @@ namespace GridSchematics
                 new Vector2(center.X, center.Y - height * 0.5f - metrics.S(10f)),
                 null,
                 data != null && data.IsReady ? UiText : UiTextMuted,
-                CurrentTextFontId,
+                InfoDrawerTextFontId,
                 TextAlignment.CENTER,
                 metrics.SmallText
             ));
