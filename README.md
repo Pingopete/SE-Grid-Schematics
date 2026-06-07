@@ -2,8 +2,6 @@
 
 Space Engineers mod for scanning a construct and drawing a schematic-style LCD preview.
 
-Gitfeed Pull Test
-
 ## Current Status
 
 The active mod code lives in:
