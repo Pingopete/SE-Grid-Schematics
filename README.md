@@ -1,7 +1,7 @@
 # SE Grid Schematics
 
 Space Engineers mod for scanning a construct and drawing a schematic-style LCD preview.
-pull test
+
 ## Current Status
 
 The active mod code lives in:
