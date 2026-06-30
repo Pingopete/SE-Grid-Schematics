@@ -9,6 +9,14 @@ namespace GridSchematics
 {
     public static partial class RenderEngine
     {
+        // QW1: TTL (in ticks) for the cargo summary/load-summary caches; ~0.5s keeps the drawer
+        // visually current while removing the per-render physical-group inventory walk under power churn.
+        const int CargoSummaryRefreshTicks = 30;
+
+        // QW7: reused scratch list for per-inventory item reads (single-threaded render path),
+        // instead of allocating a new List per inventory per block per summary build.
+        static readonly List<VRage.Game.ModAPI.Ingame.MyInventoryItem> CargoInventoryItemScratch = new List<VRage.Game.ModAPI.Ingame.MyInventoryItem>();
+
         static void DrawCargoInfoGlyph(MySpriteDrawFrame frame, ScreenZone zone, Color storage, Color conveyor, Color muted, GridSchematicsLcdApp app, bool isCursorOnlyRender)
         {
             var metrics = UiLayout.BuildMetrics(zone.Width, zone.Height);
@@ -39,6 +47,12 @@ namespace GridSchematics
         }
 
 
+
+        const float CargoReduxCanonicalPanelY = 312f;
+        static bool CurrentCargoReduxUsesPanelTransform;
+        static float CurrentCargoReduxScale = 1f;
+        static float CurrentCargoReduxPanelX;
+        static float CurrentCargoReduxPanelY;
 
         struct CargoDrawerMetrics
         {
@@ -94,10 +108,25 @@ namespace GridSchematics
             if (loadSummary == null)
                 loadSummary = new CargoPanelSummary();
 
-            DrawCargoInfoDrawerReduxChrome(frame, app, summary);
-            DrawCargoInfoDrawerReduxLoad(frame, loadSummary, null, app);
-            DrawCargoInfoDrawerReduxMix(frame, summary, app);
-            DrawCargoInfoDrawerReduxActions(frame, selectedInfo, app);
+            bool previousUsesPanelTransform = CurrentCargoReduxUsesPanelTransform;
+            float previousScale = CurrentCargoReduxScale;
+            float previousPanelX = CurrentCargoReduxPanelX;
+            float previousPanelY = CurrentCargoReduxPanelY;
+            ConfigureCargoReduxLayout(zone, app);
+            try
+            {
+                DrawCargoInfoDrawerReduxChrome(frame, app, summary);
+                DrawCargoInfoDrawerReduxLoad(frame, loadSummary, null, app);
+                DrawCargoInfoDrawerReduxMix(frame, summary, app);
+                DrawCargoInfoDrawerReduxActions(frame, selectedInfo, app);
+            }
+            finally
+            {
+                CurrentCargoReduxUsesPanelTransform = previousUsesPanelTransform;
+                CurrentCargoReduxScale = previousScale;
+                CurrentCargoReduxPanelX = previousPanelX;
+                CurrentCargoReduxPanelY = previousPanelY;
+            }
         }
 
         static void DrawCargoInfoDrawerReduxChrome(MySpriteDrawFrame frame, GridSchematicsLcdApp app, CargoPanelSummary mixSummary)
@@ -124,7 +153,7 @@ namespace GridSchematics
             AddCargoReduxText(frame, "FILTER:", 248f, 331f, CargoSelectableTextColor(app, UiLayout.CargoInfoFilterToggleId, true), 0.30f, TextAlignment.LEFT);
             DrawCargoRightHeaderText(frame, "TRANSFER", 365f, UiLayout.CargoInfoTransferModeId, transferSelectionActive, transferMode, hoverId);
             DrawCargoRightHeaderText(frame, "ACTIONS", 444f, UiLayout.CargoInfoActionsModeId, !transferMode, false, hoverId);
-            AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(331f, 337f), new Vector2(6f, 6f), CargoSelectableTextColor(app, UiLayout.CargoInfoFilterToggleId, true), null, TextAlignment.CENTER, 3.1416f));
+            AddCargoReduxTexture(frame, "Triangle", 331f, 337f, 6f, 6f, CargoSelectableTextColor(app, UiLayout.CargoInfoFilterToggleId, true), 3.1416f);
 
             AddCargoReduxRect(frame, 84f, 345.5f, 156f, 1f, new Color(192, 192, 192, 17));
             AddCargoReduxRect(frame, 256f, 345.5f, 164f, 1f, faint);
@@ -325,9 +354,6 @@ namespace GridSchematics
             Color storage = ResolveStorageSchematicColor();
             string filter = summary != null ? NormalizeCargoInfoSelector(summary.Filter) : "ALL";
             string hoverId = app != null && app.TouchInput != null ? app.TouchInput.HoverRegionId ?? string.Empty : string.Empty;
-            bool filterHover = string.Equals(hoverId, UiLayout.CargoInfoFilterToggleId, StringComparison.Ordinal);
-            if (filterHover)
-                AddCargoReduxRect(frame, 288f, 336f, 82f, 14f, new Color(UiSelected.R, UiSelected.G, UiSelected.B, 28));
             AddCargoReduxText(frame, CargoFilterHeaderLabel(filter), 289f, 331f, CargoSelectableTextColor(app, UiLayout.CargoInfoFilterToggleId, true), 0.30f, TextAlignment.LEFT);
             DrawCargoReduxStackedBar(frame, summary, filter, storage);
 
@@ -367,11 +393,12 @@ namespace GridSchematics
             if (hidden > 0)
             {
                 AddCargoReduxText(frame, hidden.ToString(), 181f, 483f, UiTextMuted, 0.25f, TextAlignment.CENTER);
-                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(192f, 489f), new Vector2(6f, 6f), UiTextMuted, null, TextAlignment.CENTER, 3.1416f));
+                AddCargoReduxTexture(frame, "Triangle", 192f, 489f, 6f, 6f, UiTextMuted, 3.1416f);
             }
 
-            bool canAddQuota = app == null || app.Ui == null || !string.Equals(app.Ui.CargoRightPanelMode ?? string.Empty, "TRANSFER", StringComparison.OrdinalIgnoreCase) || string.Equals(app.Ui.CargoTransferMixViewTarget ?? "SOURCE", app.Ui.CargoTransferDirectionReversed ? "DEST" : "SOURCE", StringComparison.Ordinal);
-            string addLabel = canAddQuota ? (app != null && app.Ui != null && app.Ui.CargoMixSelectedItemKeys.Count > 0 ? "ADD TO QUOTA >>" : "ADD ALL >>") : "SOURCE REQUIRED";
+            bool hasDestSelection = app == null || app.Ui == null || (app.Ui.CargoTransferDestItems != null && app.Ui.CargoTransferDestItems.Count > 0);
+            bool canAddQuota = hasDestSelection && (app == null || app.Ui == null || !string.Equals(app.Ui.CargoRightPanelMode ?? string.Empty, "TRANSFER", StringComparison.OrdinalIgnoreCase) || string.Equals(app.Ui.CargoTransferMixViewTarget ?? "SOURCE", "SOURCE", StringComparison.Ordinal));
+            string addLabel = canAddQuota ? (app != null && app.Ui != null && app.Ui.CargoMixSelectedItemKeys.Count > 0 ? "ADD TO QUOTA >>" : "ADD ALL >>") : (!hasDestSelection ? "SELECT DEST" : "SOURCE REQUIRED");
             AddCargoReduxText(frame, addLabel, 324f, 483f, canAddQuota ? CargoSelectableTextColor(app, UiLayout.CargoInfoMixAddToQuotaId, false) : UiTextMuted, 0.25f, TextAlignment.RIGHT);
 
             AddCargoReduxRect(frame, 334f, 432.5f, 4f, 97f, new Color(128, 128, 128, 7));
@@ -392,7 +419,7 @@ namespace GridSchematics
                 : string.Empty;
             string[] options = new[] { "ALL", "ORE", "INGOT", "COMP", "TOOLS", "CONSUMABLE" };
             AddCargoReduxRect(frame, 288f, 400f, 84f, 96f, new Color(6, 8, 8, 255));
-            DrawScreenRectBorder(frame, new Vector2(288f, 400f), new Vector2(84f, 96f), UiAccentDim);
+            DrawCargoReduxBorder(frame, 288f, 400f, 84f, 96f, UiAccentDim);
             for (int i = 0; i < options.Length; i++)
             {
                 string option = options[i];
@@ -415,7 +442,7 @@ namespace GridSchematics
                 }
 
                 AddCargoReduxRect(frame, 288f, y + 8f, 82f, 16f, fill);
-                DrawScreenRectBorder(frame, new Vector2(288f, y + 8f), new Vector2(82f, 16f), border);
+                DrawCargoReduxBorder(frame, 288f, y + 8f, 82f, 16f, border);
                 AddCargoReduxText(frame, CargoFilterDisplayLabel(option), 250f, y + 3f, text, 0.25f, TextAlignment.LEFT);
             }
         }
@@ -556,7 +583,7 @@ namespace GridSchematics
                 float ratio = first / (float)Math.Max(1, actions.Count - visible);
                 float thumbH = Math.Max(12f, 126f * visible / (float)actions.Count);
                 AddCargoReduxRect(frame, 502f, 352f + thumbH * 0.5f + ratio * Math.Max(1f, 126f - thumbH), 6f, thumbH, new Color(192, 192, 192, 95));
-                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(424.5f, 487.5f), new Vector2(7f, 7f), UiTextMuted, null, TextAlignment.CENTER, 3.14159274f));
+                AddCargoReduxTexture(frame, "Triangle", 424.5f, 487.5f, 7f, 7f, UiTextMuted, 3.14159274f);
             }
         }
 
@@ -585,10 +612,8 @@ namespace GridSchematics
             DrawCargoTransferQuotaChrome(frame, storage, overflow ? UiWarning : UiSelected);
             AddCargoReduxText(frame, "VOL: " + FormatCargoCompactVolume(quotaAmount), 375f, 363f, storage, 0.25f, TextAlignment.LEFT);
             AddCargoReduxText(frame, "M: " + FormatCargoCompactMass(quotaAmount), 429f, 363f, storage, 0.25f, TextAlignment.LEFT);
-            Color directionBase = app != null && app.Ui != null && app.Ui.CargoTransferDirectionReversed ? ResolveStorageSchematicColor() : ResolveSecondarySchematicColor();
-            Color dirColor = string.Equals(hoverId, UiLayout.CargoInfoTransferDirectionId, StringComparison.Ordinal) ? directionBase : new Color(directionBase.R, directionBase.G, directionBase.B, 95);
-            float dirRot = app != null && app.Ui != null && app.Ui.CargoTransferDirectionReversed ? 0f : 3.1416f;
-            AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(472f, 369f), new Vector2(8f, 8f), dirColor, null, TextAlignment.CENTER, dirRot));
+            Color dirColor = storage;
+            AddCargoReduxTexture(frame, "Triangle", 472f, 369f, 8f, 8f, dirColor, 3.1416f);
             AddCargoReduxText(frame, "DIR", 485f, 363f, dirColor, 0.25f, TextAlignment.LEFT);
 
             AddCargoReduxText(frame, overflow ? FormatCargoCompactVolume(quotaAmount) : ((int)Math.Round(destQuotaRatio * 100f)).ToString() + "%", 403f, 390f, overflow ? UiWarning : UiSelected, 0.25f, TextAlignment.LEFT);
@@ -602,7 +627,7 @@ namespace GridSchematics
             DrawCargoTransferTableChrome(frame);
             DrawCargoTransferQuotaRows(frame, app);
             AddCargoReduxText(frame, "<< CLEAR ALL", 352f, 483f, CargoSelectableTextColor(app, UiLayout.CargoInfoTransferClearId, false), 0.25f, TextAlignment.LEFT);
-            Color transferNow = app != null && app.Ui != null && app.Ui.CargoTransferDirectionReversed ? ResolveStorageSchematicColor() : ResolveSecondarySchematicColor();
+            Color transferNow = ResolveSecondarySchematicColor();
             if (app == null || app.TouchInput == null || !string.Equals(app.TouchInput.HoverRegionId ?? string.Empty, UiLayout.CargoInfoTransferNowId, StringComparison.Ordinal))
                 transferNow = new Color(transferNow.R, transferNow.G, transferNow.B, 150);
             AddCargoReduxText(frame, "TRANSFER NOW >>", 460f, 483f, transferNow, 0.25f, TextAlignment.CENTER);
@@ -620,7 +645,7 @@ namespace GridSchematics
             }
 
             AddCargoReduxRect(frame, 421.5f, centerY, 141f, 15f, baseFill);
-            DrawScreenRectBorder(frame, new Vector2(421.5f, centerY), new Vector2(141f, 15f), baseBorder);
+            DrawCargoReduxBorder(frame, 421.5f, centerY, 141f, 15f, baseBorder);
 
             string label;
             string state;
@@ -642,7 +667,7 @@ namespace GridSchematics
             AddCargoReduxRect(frame, x, y, 16f, 7f, rail);
             if (command)
             {
-                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(x + 4f, y), new Vector2(6f, 6f), hover ? UiSelected : UiTextMuted, null, TextAlignment.CENTER, 1.57079637f));
+                AddCargoReduxTexture(frame, "Triangle", x + 4f, y, 6f, 6f, hover ? UiSelected : UiTextMuted, 1.57079637f);
                 return;
             }
 
@@ -717,6 +742,46 @@ namespace GridSchematics
             text = text.Trim().ToUpperInvariant();
             return text.Length <= 12 ? text : text.Substring(0, 11) + ".";
         }
+        static void ConfigureCargoReduxLayout(ScreenZone zone, GridSchematicsLcdApp app)
+        {
+            CurrentCargoReduxUsesPanelTransform = false;
+            CurrentCargoReduxScale = 1f;
+            CurrentCargoReduxPanelX = 0f;
+            CurrentCargoReduxPanelY = 0f;
+
+            if (app == null || app.Surface == null)
+                return;
+
+            var surfaceSize = app.Surface.SurfaceSize;
+            var profile = UiLayout.BuildSurfaceProfile((int)surfaceSize.X, (int)surfaceSize.Y);
+            if (!profile.IsCanonical1024Square)
+                return;
+
+            CurrentCargoReduxUsesPanelTransform = true;
+            CurrentCargoReduxScale = 2f;
+            CurrentCargoReduxPanelX = zone.X;
+            CurrentCargoReduxPanelY = zone.Y;
+        }
+
+        static Vector2 CargoReduxPosition(float x, float y)
+        {
+            if (!CurrentCargoReduxUsesPanelTransform)
+                return new Vector2(x, y);
+            return new Vector2(CurrentCargoReduxPanelX + x * CurrentCargoReduxScale, CurrentCargoReduxPanelY + (y - CargoReduxCanonicalPanelY) * CurrentCargoReduxScale);
+        }
+
+        static Vector2 CargoReduxSize(float w, float h)
+        {
+            if (!CurrentCargoReduxUsesPanelTransform)
+                return new Vector2(Math.Max(1f, w), Math.Max(1f, h));
+            return new Vector2(Math.Max(1f, w * CurrentCargoReduxScale), Math.Max(1f, h * CurrentCargoReduxScale));
+        }
+
+        static float CargoReduxTextScale(float scale)
+        {
+            return CurrentCargoReduxUsesPanelTransform ? scale * CurrentCargoReduxScale : scale;
+        }
+
         static void AddCargoReduxRect(MySpriteDrawFrame frame, float x, float y, float w, float h, Color color)
         {
             AddCargoReduxRect(frame, x, y, w, h, color, 0f);
@@ -724,12 +789,22 @@ namespace GridSchematics
 
         static void AddCargoReduxRect(MySpriteDrawFrame frame, float x, float y, float w, float h, Color color, float rotation)
         {
-            AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(x, y), new Vector2(Math.Max(1f, w), Math.Max(1f, h)), color, null, TextAlignment.CENTER, rotation));
+            AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", CargoReduxPosition(x, y), CargoReduxSize(w, h), color, null, TextAlignment.CENTER, rotation));
+        }
+
+        static void AddCargoReduxTexture(MySpriteDrawFrame frame, string texture, float x, float y, float w, float h, Color color, float rotation)
+        {
+            AddSprite(frame, new MySprite(SpriteType.TEXTURE, texture, CargoReduxPosition(x, y), CargoReduxSize(w, h), color, null, TextAlignment.CENTER, rotation));
+        }
+
+        static void DrawCargoReduxBorder(MySpriteDrawFrame frame, float x, float y, float w, float h, Color color)
+        {
+            DrawScreenRectBorder(frame, CargoReduxPosition(x, y), CargoReduxSize(w, h), color, CurrentCargoReduxUsesPanelTransform ? CurrentCargoReduxScale : 1f);
         }
 
         static void AddCargoReduxText(MySpriteDrawFrame frame, string text, float x, float y, Color color, float scale, TextAlignment alignment)
         {
-            AddSprite(frame, new MySprite(SpriteType.TEXT, text ?? string.Empty, new Vector2(x, y), null, color, InfoDrawerTextFontId, alignment, scale));
+            AddSprite(frame, new MySprite(SpriteType.TEXT, text ?? string.Empty, CargoReduxPosition(x, y), null, color, InfoDrawerTextFontId, alignment, CargoReduxTextScale(scale)));
         }
 
         static Color CargoSelectableTextColor(GridSchematicsLcdApp app, string regionId, bool selected)
@@ -1046,8 +1121,8 @@ namespace GridSchematics
                 AddCargoReduxText(frame, ShortenCargoMixItemName(item.Name), 351f, y, text, 0.25f, TextAlignment.LEFT);
                 AddCargoReduxText(frame, FormatCargoCompactVolume(item.Amount), 403f, y, text, 0.25f, TextAlignment.CENTER);
                 AddCargoReduxText(frame, FormatCargoCompactMass(item.Amount), 437f, y, text, 0.25f, TextAlignment.CENTER);
-                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(459f, y + 4f), new Vector2(8f, 8f), text, null, TextAlignment.CENTER, 6.28318548f));
-                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(473f, y + 5f), new Vector2(8f, 8f), text, null, TextAlignment.CENTER, 3.14159274f));
+                AddCargoReduxTexture(frame, "Triangle", 459f, y + 4f, 8f, 8f, text, 6.28318548f);
+                AddCargoReduxTexture(frame, "Triangle", 473f, y + 5f, 8f, 8f, text, 3.14159274f);
                 DrawCargoReduxX(frame, 487.5f, y + 5f, text);
             }
             AddCargoReduxRect(frame, 503f, 448.5f, 4f, 63f, new Color(128, 128, 128, 7));
@@ -1582,9 +1657,11 @@ namespace GridSchematics
 
             OverlayBlockInfo loadInfo = ResolveCargoLoadSummarySelectionInfo(app);
             string cacheKey = "load:" + BuildCargoSummaryCacheKey(app, loadInfo);
-            if (isCursorOnlyRender && app.Ui != null &&
+            // QW1: see GetOrBuildCargoSummaryForPanel — cache honored on all paths with a short TTL.
+            if (app.Ui != null &&
                 string.Equals(app.Ui.CachedCargoLoadSummaryKey, cacheKey, StringComparison.Ordinal) &&
-                app.Ui.CachedCargoLoadSummary != null)
+                app.Ui.CachedCargoLoadSummary != null &&
+                (isCursorOnlyRender || app.CurrentTick - app.Ui.CachedCargoLoadSummaryTick < CargoSummaryRefreshTicks))
             {
                 return app.Ui.CachedCargoLoadSummary;
             }
@@ -1594,6 +1671,7 @@ namespace GridSchematics
             {
                 app.Ui.CachedCargoLoadSummaryKey = cacheKey;
                 app.Ui.CachedCargoLoadSummary = summary;
+                app.Ui.CachedCargoLoadSummaryTick = app.CurrentTick;
             }
 
             return summary;
@@ -1608,7 +1686,7 @@ namespace GridSchematics
         static bool IsCargoLoadSelectionScoped(GridSchematicsLcdApp app)
         {
             var ui = app != null ? app.Ui : null;
-            return ui != null && ui.SelectedBlockStackItems != null && ui.SelectedBlockStackItems.Count > 1 && ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex;
+            return ui != null && ui.SelectedBlockStackItems != null && ui.SelectedBlockStackItems.Count > 0 && ui.SelectedBlockStackIndex != UiState.SelectedBlockStackAllIndex;
         }
 
         static bool IsCargoLoadCursorActive(GridSchematicsLcdApp app)
@@ -1628,6 +1706,8 @@ namespace GridSchematics
                     return "GROUP" + (groupIndex == 2 ? "B" : "A") + " TOTALS";
                 return "GROUP TOTALS";
             }
+            if (app.Ui != null && app.Ui.SelectedBlockStackItems != null && app.Ui.SelectedBlockStackItems.Count == 1 && app.Ui.SelectedBlockStackIndex == 0)
+                return "BLOCK TOTALS";
             return "STACK TOTALS";
         }
 
@@ -1643,6 +1723,8 @@ namespace GridSchematics
                     return "GROUP" + (groupIndex == 2 ? "B" : "A");
                 return "GROUP";
             }
+            if (app.Ui != null && app.Ui.SelectedBlockStackItems != null && app.Ui.SelectedBlockStackItems.Count == 1 && app.Ui.SelectedBlockStackIndex == 0)
+                return "BLOCK";
             return "STACK";
         }
 
@@ -1672,9 +1754,13 @@ namespace GridSchematics
 
             selectedInfo = ResolveTransferCargoMixSelectionInfo(app, selectedInfo);
             string cacheKey = BuildCargoSummaryCacheKey(app, selectedInfo);
-            if (isCursorOnlyRender && app.Ui != null &&
+            // QW1: honor the (resource-agnostic) cache on ALL render paths, bounded by a short TTL,
+            // instead of only on cursor-only renders. Removes the per-render physical-group inventory
+            // walk that rapid power/container switching otherwise forces every ~6 ticks.
+            if (app.Ui != null &&
                 string.Equals(app.Ui.CachedCargoSummaryKey, cacheKey, StringComparison.Ordinal) &&
-                app.Ui.CachedCargoSummary != null)
+                app.Ui.CachedCargoSummary != null &&
+                (isCursorOnlyRender || app.CurrentTick - app.Ui.CachedCargoSummaryTick < CargoSummaryRefreshTicks))
             {
                 return app.Ui.CachedCargoSummary;
             }
@@ -1684,6 +1770,7 @@ namespace GridSchematics
             {
                 app.Ui.CachedCargoSummaryKey = cacheKey;
                 app.Ui.CachedCargoSummary = summary;
+                app.Ui.CachedCargoSummaryTick = app.CurrentTick;
             }
 
             return summary;
@@ -1721,12 +1808,13 @@ namespace GridSchematics
         {
             string filter = app != null && app.Ui != null ? NormalizeCargoInfoSelector(app.Ui.CargoInfoFilter) : "ALL";
             string focus = app != null && app.Ui != null ? NormalizeCargoInfoSelector(app.Ui.CargoInfoFocus) : "ALL";
+            string source = app != null && app.Ui != null ? NormalizeCargoInfoSource(app.Ui.CargoInfoSource) : "LOCAL";
             if (app == null || app.OwnerBlock == null)
                 return "unbound:" + filter + ":" + focus + ":" + (selectedInfo != null ? selectedInfo.Id : "none");
 
             long panelId = app.OwnerBlock.EntityId;
             if (selectedInfo == null || selectedInfo.Blocks == null || selectedInfo.Blocks.Count <= 0)
-                return "total:" + panelId + ":" + filter + ":" + focus + ":" + (selectedInfo != null ? selectedInfo.Id : "all");
+                return "total:" + panelId + ":" + source + ":" + filter + ":" + focus + ":" + (selectedInfo != null ? selectedInfo.Id : "all");
 
             int hash = 17;
             hash = hash * 31 + (selectedInfo.Id == null ? 0 : selectedInfo.Id.GetHashCode());
@@ -1748,7 +1836,12 @@ namespace GridSchematics
                 hash = hash * 31 + (int)(blockId ^ (blockId >> 32));
             }
 
-            return "selected:" + panelId + ":" + filter + ":" + focus + ":" + hash;
+            return "selected:" + panelId + ":" + source + ":" + filter + ":" + focus + ":" + hash;
+        }
+
+        static string NormalizeCargoInfoSource(string source)
+        {
+            return string.Equals(source ?? string.Empty, "AUX", StringComparison.OrdinalIgnoreCase) ? "AUX" : "LOCAL";
         }
 
         static CargoPanelSummary BuildCargoSummaryForPanel(GridSchematicsLcdApp app, OverlayBlockInfo selectedInfo)
@@ -1759,8 +1852,22 @@ namespace GridSchematics
             var summary = new CargoPanelSummary();
             summary.Filter = app != null && app.Ui != null ? NormalizeCargoInfoSelector(app.Ui.CargoInfoFilter) : "ALL";
             summary.Focus = app != null && app.Ui != null ? NormalizeCargoInfoSelector(app.Ui.CargoInfoFocus) : "ALL";
-            summary.DisplayLabel = selectedInfo != null && !string.IsNullOrWhiteSpace(selectedInfo.Name) ? selectedInfo.Name : "CARGO MIX";
-            var topology = app != null && app.ConstructCache != null ? app.ConstructCache.ConveyorNetwork : null;
+            bool auxiliarySource = app != null && app.Ui != null && string.Equals(NormalizeCargoInfoSource(app.Ui.CargoInfoSource), "AUX", StringComparison.Ordinal);
+            summary.DisplayLabel = selectedInfo != null && !string.IsNullOrWhiteSpace(selectedInfo.Name) ? selectedInfo.Name : auxiliarySource ? "AUX CARGO" : "CARGO MIX";
+            var topology = auxiliarySource ? null : app != null && app.ConstructCache != null ? app.ConstructCache.ConveyorNetwork : null;
+            // QW4: build a block-id -> isWorking lookup once so reachability is O(1) per block instead of
+            // an O(nodes) linear scan per block (the summary walk was O(blocks x nodes)).
+            Dictionary<long, bool> reachMap = null;
+            if (topology != null && topology.Nodes != null)
+            {
+                reachMap = new Dictionary<long, bool>(topology.Nodes.Count);
+                for (int n = 0; n < topology.Nodes.Count; n++)
+                {
+                    var node = topology.Nodes[n];
+                    if (node != null && !reachMap.ContainsKey(node.BlockEntityId))
+                        reachMap[node.BlockEntityId] = node.IsWorking;
+                }
+            }
             var itemMap = new Dictionary<string, CargoPanelItem>();
             try
             {
@@ -1768,16 +1875,12 @@ namespace GridSchematics
                 {
                     for (int i = 0; i < selectedInfo.Blocks.Count; i++)
                     {
-                        AddCargoBlockToSummary(selectedInfo.Blocks[i], summary, itemMap, topology);
+                        AddCargoBlockToSummary(selectedInfo.Blocks[i], summary, itemMap, topology, reachMap);
                     }
                 }
                 else
                 {
-                    var grids = new List<IMyCubeGrid>();
-                    MyAPIGateway.GridGroups.GetGroup(app.OwnerBlock.CubeGrid, GridLinkTypeEnum.Physical, grids);
-                    if (grids.Count == 0)
-                        grids.Add(app.OwnerBlock.CubeGrid);
-
+                    var grids = auxiliarySource ? CollectAuxiliaryCargoSummaryGrids(app) : CollectLocalCargoSummaryGrids(app);
                     var blocks = new List<IMySlimBlock>();
                     for (int g = 0; g < grids.Count; g++)
                     {
@@ -1789,7 +1892,7 @@ namespace GridSchematics
                         grid.GetBlocks(blocks, block => block != null && block.FatBlock != null && block.FatBlock.InventoryCount > 0);
                         for (int b = 0; b < blocks.Count; b++)
                         {
-                            AddCargoBlockToSummary(blocks[b].FatBlock, summary, itemMap, topology);
+                            AddCargoBlockToSummary(blocks[b].FatBlock, summary, itemMap, topology, reachMap);
                         }
                     }
                 }
@@ -1821,7 +1924,36 @@ namespace GridSchematics
             return summary;
         }
 
-        static void AddCargoBlockToSummary(IMyCubeBlock fat, CargoPanelSummary summary, Dictionary<string, CargoPanelItem> itemMap, ConveyorTopology topology)
+        static List<IMyCubeGrid> CollectAuxiliaryCargoSummaryGrids(GridSchematicsLcdApp app)
+        {
+            if (app == null)
+                return new List<IMyCubeGrid>();
+            return app.CollectAuxiliaryStaticCargoGrids();
+        }
+        static List<IMyCubeGrid> CollectLocalCargoSummaryGrids(GridSchematicsLcdApp app)
+        {
+            var grids = new List<IMyCubeGrid>();
+            if (app == null || app.OwnerBlock == null || app.OwnerBlock.CubeGrid == null)
+                return grids;
+
+            if (app.ConstructCache != null && app.ConstructCache.ConstructGrids != null && app.ConstructCache.ConstructGrids.Count > 0)
+            {
+                var seen = new HashSet<long>();
+                for (int i = 0; i < app.ConstructCache.ConstructGrids.Count; i++)
+                {
+                    var grid = app.ConstructCache.ConstructGrids[i];
+                    if (grid == null || grid.MarkedForClose || seen.Contains(grid.EntityId))
+                        continue;
+                    seen.Add(grid.EntityId);
+                    grids.Add(grid);
+                }
+            }
+
+            if (grids.Count == 0)
+                grids.Add(app.OwnerBlock.CubeGrid);
+            return grids;
+        }
+        static void AddCargoBlockToSummary(IMyCubeBlock fat, CargoPanelSummary summary, Dictionary<string, CargoPanelItem> itemMap, ConveyorTopology topology, Dictionary<long, bool> reachMap)
         {
             if (fat == null || summary == null || itemMap == null)
                 return;
@@ -1829,7 +1961,7 @@ namespace GridSchematics
             var blockSummary = new CargoPanelBlock();
             blockSummary.Block = fat;
             blockSummary.Online = IsCargoBlockOnline(fat);
-            blockSummary.Reachable = IsCargoBlockReachable(fat, topology);
+            blockSummary.Reachable = IsCargoBlockReachable(fat, topology, reachMap);
 
             try
             {
@@ -1849,7 +1981,8 @@ namespace GridSchematics
                     summary.CurrentVolume += current;
                     summary.MaxVolume += max;
 
-                    var items = new List<VRage.Game.ModAPI.Ingame.MyInventoryItem>();
+                    var items = CargoInventoryItemScratch; // QW7: reuse one scratch list instead of allocating per inventory
+                    items.Clear();
                     try
                     {
                         inventory.GetItems(items);
@@ -1930,7 +2063,7 @@ namespace GridSchematics
             string type = typeId ?? string.Empty;
             string sub = subtype ?? string.Empty;
             if (sub.IndexOf("Ice", StringComparison.OrdinalIgnoreCase) >= 0)
-                return "CONSUMABLE";
+                return "ORE";
             if (type.IndexOf("Ore", StringComparison.OrdinalIgnoreCase) >= 0)
                 return "ORE";
             if (type.IndexOf("Ingot", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -2336,12 +2469,17 @@ namespace GridSchematics
             }
         }
 
-        static bool IsCargoBlockReachable(IMyCubeBlock block, ConveyorTopology topology)
+        static bool IsCargoBlockReachable(IMyCubeBlock block, ConveyorTopology topology, Dictionary<long, bool> reachMap)
         {
             if (block == null)
                 return false;
             if (topology == null || topology.Nodes == null)
                 return IsCargoBlockOnline(block);
+            if (reachMap != null)
+            {
+                bool working;
+                return reachMap.TryGetValue(block.EntityId, out working) && working;
+            }
             try
             {
                 for (int i = 0; i < topology.Nodes.Count; i++)
@@ -2413,6 +2551,8 @@ namespace GridSchematics
 
     }
 }
+
+
 
 
 

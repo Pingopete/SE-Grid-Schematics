@@ -1,4 +1,4 @@
-using Sandbox.ModAPI;
+﻿using Sandbox.ModAPI;
 using System;
 
 namespace GridSchematics
@@ -85,6 +85,8 @@ namespace GridSchematics
             scope = scope.Trim().ToLowerInvariant();
             if (scope == "drawer" || scope == "info" || scope == "panel")
                 return "drawer";
+            if (scope == "editor" || scope == "ui" || scope == "chrome")
+                return "editor";
             return "full";
         }
 
@@ -132,3 +134,4 @@ namespace GridSchematics
         }
     }
 }
+

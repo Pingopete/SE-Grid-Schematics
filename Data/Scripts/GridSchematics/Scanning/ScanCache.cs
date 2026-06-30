@@ -34,6 +34,10 @@ namespace GridSchematics
         public bool StartupScanCompleted { get; private set; }
         public DateTime LastUpdatedUtc { get; private set; }
 
+        // QW5/QW8: reused world-entity scratch set so RefreshConstructGrids does not allocate a fresh
+        // HashSet every call (it runs several times per scan), and so a single snapshot can be shared.
+        readonly HashSet<IMyEntity> _scratchEntities = new HashSet<IMyEntity>();
+
         public ScanCache(long constructId)
         {
             ConstructId = constructId;
@@ -75,6 +79,16 @@ namespace GridSchematics
             return data != null && data.IsReady && data.Samples != null && data.Resolution > 0;
         }
 
+        public bool IsConnectorHullScanGrid(long entityId)
+        {
+            return ConnectorHullScanGridIds != null && ConnectorHullScanGridIds.Contains(entityId);
+        }
+
+        public int ConnectorHullScanGridCount
+        {
+            get { return ConnectorHullScanGridIds != null ? ConnectorHullScanGridIds.Count : 0; }
+        }
+
         public ConveyorTopology GetOrCreateConveyorNetwork(IMyCubeGrid grid, bool force)
         {
             if (force || ConveyorNetwork == null)
@@ -94,13 +108,23 @@ namespace GridSchematics
 
         public ShipGrid UpdateConstructProjection(IMyCubeGrid rootGrid, ScanView view, bool force)
         {
+            return UpdateConstructProjection(rootGrid, view, force, true);
+        }
+
+        // QW8: split "re-discover construct membership" (an O(world) GetEntities sweep + IsSameConstructAs +
+        // connector BFS) from "rebuild the motion-invariant projection". The projection can refresh on the
+        // fast cadence while membership re-discovery runs only ~1x/sec, instead of sweeping the world every
+        // ~12 ticks per panel. A fresh/empty cache still re-discovers regardless of the flag.
+        public ShipGrid UpdateConstructProjection(IMyCubeGrid rootGrid, ScanView view, bool force, bool rediscover)
+        {
             if (rootGrid == null)
                 return ShipGrid;
 
             ShipGrid projectedGrid;
             if (force || !ProjectedGrids.TryGetValue(view, out projectedGrid) || projectedGrid == null)
             {
-                RefreshConstructGrids(rootGrid);
+                if (rediscover || ConstructGrids.Count == 0 || BasisGrid == null)
+                    RefreshConstructGrids(rootGrid);
                 projectedGrid = ShipGrid.BuildFromConstruct(ConstructGrids, BasisGrid ?? rootGrid, ReferenceRemoteControl, view);
                 ProjectedGrids[view] = projectedGrid;
                 MarkUpdated();
@@ -111,12 +135,24 @@ namespace GridSchematics
 
         public void UpdateCachedRaycastScans(IMyCubeGrid rootGrid, int resolution)
         {
-            UpdateCachedRaycastScan(rootGrid, ScanView.Top, resolution);
-            UpdateCachedRaycastScan(rootGrid, ScanView.Side, resolution);
-            UpdateCachedRaycastScan(rootGrid, ScanView.Front, resolution);
+            // QW8: take one world-entity snapshot and share it across all three view scans instead of
+            // sweeping the world once per view.
+            var entities = _scratchEntities;
+            entities.Clear();
+            if (MyAPIGateway.Entities != null)
+                MyAPIGateway.Entities.GetEntities(entities, entity => entity is IMyCubeGrid);
+
+            UpdateCachedRaycastScan(rootGrid, ScanView.Top, resolution, entities);
+            UpdateCachedRaycastScan(rootGrid, ScanView.Side, resolution, entities);
+            UpdateCachedRaycastScan(rootGrid, ScanView.Front, resolution, entities);
         }
 
         public RawRaycastScanData UpdateCachedRaycastScan(IMyCubeGrid rootGrid, ScanView view, int resolution)
+        {
+            return UpdateCachedRaycastScan(rootGrid, view, resolution, null);
+        }
+
+        public RawRaycastScanData UpdateCachedRaycastScan(IMyCubeGrid rootGrid, ScanView view, int resolution, HashSet<IMyEntity> providedEntities)
         {
             if (rootGrid == null)
                 return null;
@@ -124,7 +160,7 @@ namespace GridSchematics
             if (resolution <= 0)
                 resolution = 256;
 
-            RefreshConstructGrids(rootGrid);
+            RefreshConstructGrids(rootGrid, providedEntities);
             var projectedGrid = ShipGrid.BuildFromConstruct(ConstructGrids, BasisGrid ?? rootGrid, ReferenceRemoteControl, view);
             ProjectedGrids[view] = projectedGrid;
 
@@ -144,6 +180,13 @@ namespace GridSchematics
 
         void RefreshConstructGrids(IMyCubeGrid rootGrid)
         {
+            RefreshConstructGrids(rootGrid, null);
+        }
+
+        // QW8: callers that need several construct refreshes close together (e.g. the 3-view cached
+        // raycast scan) can pass one shared world-entity snapshot to avoid re-sweeping the world each time.
+        void RefreshConstructGrids(IMyCubeGrid rootGrid, HashSet<IMyEntity> providedEntities)
+        {
             ConstructGrids.Clear();
             HullScanTargetGrids.Clear();
             ValidHullScanGridIds.Clear();
@@ -153,8 +196,17 @@ namespace GridSchematics
             if (LastConnectorDiscoveryDiagnostics == null)
                 LastConnectorDiscoveryDiagnostics = new ConnectorScanDiscoveryDiagnostics();
 
-            var entities = new HashSet<IMyEntity>();
-            MyAPIGateway.Entities.GetEntities(entities, entity => entity is IMyCubeGrid);
+            HashSet<IMyEntity> entities;
+            if (providedEntities != null)
+            {
+                entities = providedEntities;
+            }
+            else
+            {
+                entities = _scratchEntities;
+                entities.Clear();
+                MyAPIGateway.Entities.GetEntities(entities, entity => entity is IMyCubeGrid);
+            }
 
             var constructSeedGrids = BuildSameConstructSeedGrids(rootGrid, entities);
             var connectorSearchSeedGrids = constructSeedGrids;
@@ -174,7 +226,6 @@ namespace GridSchematics
 
             if (ConstructGrids.Count == 0)
                 ConstructGrids.Add(rootGrid);
-
             BasisGrid = SelectBasisGrid(ConstructGrids, rootGrid);
 
             for (int i = 0; i < ConstructGrids.Count; i++)
@@ -197,7 +248,6 @@ namespace GridSchematics
                 ValidHullScanGridIds.Add(grid.EntityId);
                 ConnectorHullScanGridIds.Add(grid.EntityId);
             }
-
             ReferenceRemoteControl = FindFirstRemoteControl(BasisGrid);
         }
 
@@ -363,13 +413,14 @@ namespace GridSchematics
                 visited.Add(rootGrid.EntityId);
             }
 
+            var blocks = new List<IMySlimBlock>(); // QW5: reused across BFS iterations instead of one alloc per visited grid
             while (queue.Count > 0)
             {
                 var grid = queue.Dequeue();
                 if (diagnostics != null)
                     diagnostics.GridsVisited++;
 
-                var blocks = new List<IMySlimBlock>();
+                blocks.Clear();
                 try
                 {
                     grid.GetBlocks(blocks, block => block != null && block.FatBlock is IMyShipConnector);
@@ -586,14 +637,19 @@ namespace GridSchematics
                 ulong hash = 1469598103934665603UL;
                 AccumulateHash(ref hash, ConstructId);
                 AccumulateHash(ref hash, rootGrid != null ? rootGrid.EntityId : 0);
-                AccumulateHash(ref hash, ConstructGrids.Count);
-                AccumulateHash(ref hash, ValidHullScanGridIds.Count);
-                AccumulateHash(ref hash, HullScanTargetGrids.Count);
+                var constructGrids = new List<IMyCubeGrid>(ConstructGrids);
+                var hullScanTargetGrids = new List<IMyCubeGrid>(HullScanTargetGrids);
+                SortGridsByEntityId(constructGrids);
+                SortGridsByEntityId(hullScanTargetGrids);
 
-                for (int i = 0; i < ConstructGrids.Count; i++)
-                    AccumulateGridSignature(ref hash, ConstructGrids[i]);
-                for (int i = 0; i < HullScanTargetGrids.Count; i++)
-                    AccumulateGridSignature(ref hash, HullScanTargetGrids[i]);
+                AccumulateHash(ref hash, constructGrids.Count);
+                AccumulateHash(ref hash, ValidHullScanGridIds.Count);
+                AccumulateHash(ref hash, hullScanTargetGrids.Count);
+
+                for (int i = 0; i < constructGrids.Count; i++)
+                    AccumulateGridSignature(ref hash, constructGrids[i]);
+                for (int i = 0; i < hullScanTargetGrids.Count; i++)
+                    AccumulateGridSignature(ref hash, hullScanTargetGrids[i]);
 
                 return hash.ToString("X");
             }
@@ -621,6 +677,7 @@ namespace GridSchematics
             }
 
             AccumulateHash(ref hash, blocks.Count);
+            blocks.Sort(CompareSlimBlocks);
             for (int i = 0; i < blocks.Count; i++)
             {
                 var block = blocks[i];
@@ -639,6 +696,56 @@ namespace GridSchematics
             }
         }
 
+        static void SortGridsByEntityId(List<IMyCubeGrid> grids)
+        {
+            if (grids == null)
+                return;
+
+            grids.Sort((a, b) =>
+            {
+                long aId = a != null ? a.EntityId : 0;
+                long bId = b != null ? b.EntityId : 0;
+                return aId.CompareTo(bId);
+            });
+        }
+
+        static int CompareSlimBlocks(IMySlimBlock a, IMySlimBlock b)
+        {
+            if (ReferenceEquals(a, b))
+                return 0;
+            if (a == null)
+                return -1;
+            if (b == null)
+                return 1;
+
+            int cmp = a.Position.X.CompareTo(b.Position.X);
+            if (cmp != 0)
+                return cmp;
+            cmp = a.Position.Y.CompareTo(b.Position.Y);
+            if (cmp != 0)
+                return cmp;
+            cmp = a.Position.Z.CompareTo(b.Position.Z);
+            if (cmp != 0)
+                return cmp;
+
+            cmp = a.Min.X.CompareTo(b.Min.X);
+            if (cmp != 0)
+                return cmp;
+            cmp = a.Min.Y.CompareTo(b.Min.Y);
+            if (cmp != 0)
+                return cmp;
+            cmp = a.Min.Z.CompareTo(b.Min.Z);
+            if (cmp != 0)
+                return cmp;
+
+            cmp = a.Max.X.CompareTo(b.Max.X);
+            if (cmp != 0)
+                return cmp;
+            cmp = a.Max.Y.CompareTo(b.Max.Y);
+            if (cmp != 0)
+                return cmp;
+            return a.Max.Z.CompareTo(b.Max.Z);
+        }
         static void AccumulateHash(ref ulong hash, long value)
         {
             unchecked
@@ -821,8 +928,8 @@ namespace GridSchematics
             hits.Clear();
             hitDistances.Clear();
 
-            var from = shipGrid.BasisToWorld(shipGrid.Unproject(sampleX, sampleY, depthStart, view));
-            var to = shipGrid.BasisToWorld(shipGrid.Unproject(sampleX, sampleY, depthEnd, view));
+            var from = BasisToCurrentWorld(rootGrid, shipGrid, shipGrid.Unproject(sampleX, sampleY, depthStart, view));
+            var to = BasisToCurrentWorld(rootGrid, shipGrid, shipGrid.Unproject(sampleX, sampleY, depthEnd, view));
 
             try
             {
@@ -881,6 +988,35 @@ namespace GridSchematics
             return sample;
         }
 
+        Vector3D BasisToCurrentWorld(IMyCubeGrid rootGrid, ShipGrid shipGrid, Vector3D basisPosition)
+        {
+            MatrixD referenceMatrix = GetCurrentReferenceMatrix(rootGrid, shipGrid);
+            float gridSize = shipGrid != null && shipGrid.BasisGridSizeMeters > 0f ? shipGrid.BasisGridSizeMeters : 2.5f;
+            return referenceMatrix.Translation +
+                referenceMatrix.Right * (basisPosition.X * gridSize) +
+                referenceMatrix.Up * (basisPosition.Y * gridSize) +
+                referenceMatrix.Forward * (basisPosition.Z * gridSize);
+        }
+
+        MatrixD GetCurrentReferenceMatrix(IMyCubeGrid rootGrid, ShipGrid shipGrid)
+        {
+            try
+            {
+                if (ReferenceRemoteControl != null && !ReferenceRemoteControl.MarkedForClose)
+                    return ReferenceRemoteControl.WorldMatrix;
+
+                if (BasisGrid != null && !BasisGrid.MarkedForClose)
+                    return BasisGrid.WorldMatrix;
+
+                if (rootGrid != null && !rootGrid.MarkedForClose)
+                    return rootGrid.WorldMatrix;
+            }
+            catch
+            {
+            }
+
+            return shipGrid != null ? shipGrid.ReferenceMatrix : MatrixD.Identity;
+        }
         void GetDefaultViewportSampleBounds(ShipGrid shipGrid, out float sampleMinX, out float sampleMaxX, out float sampleMinY, out float sampleMaxY)
         {
             sampleMinX = shipGrid.Min2D.X - 0.5f;
@@ -1554,3 +1690,7 @@ namespace GridSchematics
         }
     }
 }
+
+
+
+

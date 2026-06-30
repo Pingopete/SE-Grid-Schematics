@@ -27,7 +27,7 @@ namespace GridSchematics
         const string ConnectorSideIconTexture = "GridSchematics_Icon_ConnectorSide";
         const string SorterIconTexture = "GridSchematics_Icon_Sorter";
         const string CalibrationTextFontId = "GridSchematics_Bahnschrift";
-        const string InfoDrawerTextFontId = "GridSchematics_MonoM";
+        static string InfoDrawerTextFontId = "GridSchematics_Mozart";
         static float CurrentHullScanAlpha = 1f;
         static float CurrentHullScanBrightness = 1f;
         static float CurrentShipBorderOpacity = 1f;
@@ -297,6 +297,7 @@ namespace GridSchematics
                 CurrentShowConnectedNetworks = app.Config.ShowConnectedNetworks;
                 CurrentUiFont = GridSchematicsConfig.NormalizeUiFont(app.Config.UiFont);
                 CurrentTextFontId = GridSchematicsConfig.GetUiFontSubtype(CurrentUiFont);
+                InfoDrawerTextFontId = GetInfoDrawerFontSubtype(CurrentUiFont);
                 ApplyUiFontRenderProfile(CurrentUiFont);
                 var size = surface.SurfaceSize;
                 CurrentDynamicTextFitEnabled = !UiLayout.BuildSurfaceProfile((int)size.X, (int)size.Y).IsCanonical512Square;
@@ -392,12 +393,14 @@ namespace GridSchematics
                     {
                         bool drawDebugBlocks = app.Ui.ShowDiscoveredBlocks;
                         DrawShipGridOverlay(frame, renderCenter, activeShipGrid, app.ConstructCache?.GetRaycastData(activeScanView), app.Config.FillMode, drawDebugBlocks, app.Ui.ShowShipBorder, app.Ui.ShowHullScan, drawDebugGrid, drawReference, app.Ui.BlurScanRender, app.Config.ShowDebug, rotationSteps, scanRaycastStep);
+                        DrawShipReferenceMarkers(frame, renderCenter, activeShipGrid, app.ConstructCache, app.OwnerBlock, app.Ui.ShowCenterOfMassMarker, app.Ui.ShowPanelPositionMarker, rotationSteps);
+                        DrawDockedMobileGridBorders(frame, renderCenter, activeShipGrid, app.ConstructCache, true, app.Ui.ShowShipBorder, rotationSteps);
                         if (app.Ui.ShowConveyorOverlay)
                             DrawConveyorOverlay(frame, renderCenter, activeShipGrid, app.ConstructCache, rotationSteps, app.Ui.ShowAllConnections);
                         bool occludeConveyorUnderFillBars = app.Ui.ShowConveyorOverlay && app.Config.BlocksOccludeConveyors;
                         if (app.Ui.ActiveOverlay == OverlayMode.Cargo && drawModeOverlays)
                             DrawCargoOverlay(frame, renderCenter, activeShipGrid, app.ConstructCache, rotationSteps, app.Ui.ShowAllConnections, app.TouchInput, app.Ui, occludeConveyorUnderFillBars);
-                        if (app.Ui.ActiveOverlay == OverlayMode.Engines && drawModeOverlays)
+                        if (app.Ui.ActiveOverlay == OverlayMode.Engines && app.IsThrustOverlayAvailable() && drawModeOverlays)
                             DrawEnginesOverlay(frame, renderCenter, activeShipGrid, app.ConstructCache, rotationSteps, app.Ui.ShowAllConnections, app.TouchInput, app.Ui, occludeConveyorUnderFillBars);
                         if (app.Ui.ActiveOverlay == OverlayMode.Oxygen)
                             DrawOxygenOverlay(frame, renderCenter, activeShipGrid, app.ConstructCache, rotationSteps, app.Ui.ShowAllConnections);
@@ -466,8 +469,8 @@ namespace GridSchematics
                     }
                     else
                     {
-                        DrawBottomSchematicButtons(frame, (int)size.X, (int)size.Y, app.Ui.ActiveOverlay, app.Ui.ShowConveyorOverlay, app.Ui.ShowInfoPanel, app.Ui.InfoPanelMode, app.Ui.ActiveMenu, app.Config.FillMode, app.TouchInput.HoverRegionId);
-                        DrawTopMenu(frame, (int)size.X, (int)size.Y, app.Ui.ActiveMenu, app.Config.View, app.Ui.ShowDiscoveredBlocks, app.Ui.ShowShipBorder, app.Ui.ShowHullScan, app.Ui.ShowDebugGrid, app.Config.ShowDebug, app.Config.ShowPerfStats, app.Ui.ShowReferenceLines, app.Ui.ShowConveyorOverlay, app.Ui.ShowFillBars, app.Ui.ShowAllConnections, app.Ui.BlurScanRender, app.Config.FillMode, app.Config.UiPalette, app.Config.UiHueShift, app.Config.UiBrightness, app.Config.UiSaturation, app.Config.UiAlpha, app.Config.UiAccentHueShift, app.Config.UiAccentBrightness, app.Config.UiAccentSaturation, app.Config.UiPanelBrightness, app.Config.UiPanelAlpha, app.Config.SchematicMainHue, app.Config.SchematicSecondaryHue, app.Config.ConveyorHue, app.Config.HullScanAlpha, app.Config.SchematicAlpha, app.Config.StorageColor, app.Config.EffectorColor, app.Ui.SegmentMode, app.MouseControlEnabled, app.MouseSensitivity, app.Config.AllowGridRotation, app.Config.PerformanceMode, app.Config.HighResScanning, app.Ui.SettingsExpandedMask, app.Ui.ActiveSettingsActionId, app.TouchInput.HoverRegionId);
+                        DrawBottomSchematicButtons(frame, (int)size.X, (int)size.Y, app.Ui.ActiveOverlay, app.Ui.ShowConveyorOverlay, app.Ui.ShowInfoPanel, app.Ui.InfoPanelMode, app.Ui.ActiveMenu, app.Config.FillMode, app.TouchInput.HoverRegionId, app.IsThrustOverlayAvailable());
+                        DrawTopMenu(frame, (int)size.X, (int)size.Y, app.Ui.ActiveMenu, app.Config.View, app.Ui.ShowDiscoveredBlocks, app.Ui.ShowShipBorder, app.Ui.ShowHullScan, app.Ui.ShowDebugGrid, app.Config.ShowDebug, app.Config.ShowPerfStats, app.Ui.ShowReferenceLines, app.Ui.ShowCenterOfMassMarker, app.Ui.ShowPanelPositionMarker, app.Ui.ShowDockedMobileGrids, app.Ui.ShowConveyorOverlay, app.Ui.ShowFillBars, app.Ui.ShowAllConnections, app.Ui.BlurScanRender, app.Config.FillMode, app.Config.UiPalette, app.Config.UiHueShift, app.Config.UiBrightness, app.Config.UiSaturation, app.Config.UiAlpha, app.Config.UiAccentHueShift, app.Config.UiAccentBrightness, app.Config.UiAccentSaturation, app.Config.UiPanelBrightness, app.Config.UiPanelAlpha, app.Config.SchematicMainHue, app.Config.SchematicSecondaryHue, app.Config.ConveyorHue, app.Config.HullScanAlpha, app.Config.SchematicAlpha, app.Config.StorageColor, app.Config.EffectorColor, app.Ui.SegmentMode, app.MouseControlEnabled, app.MouseSensitivity, app.Config.AllowGridRotation, app.Config.PerformanceMode, app.Config.HighResScanning, app.Ui.SettingsExpandedMask, app.Ui.ActiveSettingsActionId, app.TouchInput.HoverRegionId);
                     }
                     DrawCalibrationModal(frame, zones.Center, app.Ui, app.TouchInput.HoverRegionId);
                     DrawManualCalibrationDebugPopup(frame, zones.Center, app);
@@ -489,6 +492,16 @@ namespace GridSchematics
                 CurrentSpriteViewportOrigin = Vector2.Zero;
                 CurrentDynamicTextFitEnabled = false;
             }
+        }
+
+        static string GetInfoDrawerFontSubtype(string uiFont)
+        {
+            uiFont = GridSchematicsConfig.NormalizeUiFont(uiFont);
+            if (uiFont == "MOZARTGLOW")
+                return GridSchematicsConfig.GetUiFontSubtype("MOZART");
+            if (uiFont == "TELEGRAMAGLOW")
+                return GridSchematicsConfig.GetUiFontSubtype("TELEGRAMA");
+            return GridSchematicsConfig.GetUiFontSubtype(uiFont);
         }
 
         static void ApplyUiFontRenderProfile(string uiFont)
@@ -1714,7 +1727,7 @@ namespace GridSchematics
                 input.HoverRegionId == UiLayout.SetHitsId ? "Fill" :
                 input.HoverRegionId == UiLayout.SegmentModeId ? "Multiview" :
                 input.HoverRegionId == UiLayout.SchematicCargoId ? "Cargo" :
-                input.HoverRegionId == UiLayout.SchematicEnginesId ? "Engines" :
+                input.HoverRegionId == UiLayout.SchematicEnginesId ? "Thrust" :
                 input.HoverRegionId == UiLayout.SchematicPowerId ? "Power" :
                 input.HoverRegionId == UiLayout.SchematicOxygenId ? "Oxygen" :
                 input.HoverRegionId == UiLayout.SchematicConveyorId ? "Conveyor" :
@@ -1726,9 +1739,9 @@ namespace GridSchematics
             return input.IsPressed ? "Touch: press " + label : "Touch: hover " + label;
         }
 
-        static partial void DrawTopMenu(MySpriteDrawFrame frame, int screenWidth, int screenHeight, MenuPanel activeMenu, string activeView, bool showBlocks, bool showBorder, bool showHullScan, bool showGrid, bool showDebug, bool showPerfStats, bool showReference, bool showConveyorOverlay, bool showFillBars, bool showAllConnections, bool blurScan, string fillMode, string uiPalette, int uiHue, float uiBrightness, float uiSaturation, float uiAlpha, int uiAccentHue, float uiAccentBrightness, float uiAccentSaturation, float uiPanelBrightness, float uiPanelAlpha, int schematicMainHue, int schematicSecondaryHue, int conveyorHue, float hullScanAlpha, float schematicAlpha, string storageColor, string effectorColor, bool segmentMode, bool mouseControl, string mouseSensitivity, bool allowGridRotation, bool performanceMode, bool highResScanning, int settingsExpandedMask, string activeSettingsActionId, string hoverRegionId);
+        static partial void DrawTopMenu(MySpriteDrawFrame frame, int screenWidth, int screenHeight, MenuPanel activeMenu, string activeView, bool showBlocks, bool showBorder, bool showHullScan, bool showGrid, bool showDebug, bool showPerfStats, bool showReference, bool showCenterOfMass, bool showPanelPosition, bool showDockedMobileGrids, bool showConveyorOverlay, bool showFillBars, bool showAllConnections, bool blurScan, string fillMode, string uiPalette, int uiHue, float uiBrightness, float uiSaturation, float uiAlpha, int uiAccentHue, float uiAccentBrightness, float uiAccentSaturation, float uiPanelBrightness, float uiPanelAlpha, int schematicMainHue, int schematicSecondaryHue, int conveyorHue, float hullScanAlpha, float schematicAlpha, string storageColor, string effectorColor, bool segmentMode, bool mouseControl, string mouseSensitivity, bool allowGridRotation, bool performanceMode, bool highResScanning, int settingsExpandedMask, string activeSettingsActionId, string hoverRegionId);
 
-        static partial void DrawBottomSchematicButtons(MySpriteDrawFrame frame, int screenWidth, int screenHeight, OverlayMode activeOverlay, bool showConveyorOverlay, bool showInfoPanel, InfoPanelMode infoPanelMode, MenuPanel activeMenu, string fillMode, string hoverRegionId);
+        static partial void DrawBottomSchematicButtons(MySpriteDrawFrame frame, int screenWidth, int screenHeight, OverlayMode activeOverlay, bool showConveyorOverlay, bool showInfoPanel, InfoPanelMode infoPanelMode, MenuPanel activeMenu, string fillMode, string hoverRegionId, bool includeThrust);
 
         static partial void DrawChromeRestoreButton(MySpriteDrawFrame frame, int screenWidth, int screenHeight, bool minimized, string hoverRegionId);
 
@@ -1741,6 +1754,10 @@ namespace GridSchematics
         static partial void DrawSharedGridCursor(MySpriteDrawFrame frame, ScreenZone center, ShipGrid shipGrid, SharedGridCursor? sharedCursor, long localPanelId, ScanView view, int rotationSteps);
 
         static partial void DrawShipGridOverlay(MySpriteDrawFrame frame, ScreenZone center, ShipGrid shipGrid, RawRaycastScanData scanData, string fillMode, bool showBlocks, bool showBorder, bool showHullScan, bool showGrid, bool showReference, bool blurScan, bool showDebug, int rotationSteps, int raycastStep);
+
+        static partial void DrawShipReferenceMarkers(MySpriteDrawFrame frame, ScreenZone center, ShipGrid shipGrid, ScanCache cache, IMyCubeBlock panelBlock, bool showCenterOfMass, bool showPanelPosition, int rotationSteps);
+
+                static partial void DrawDockedMobileGridBorders(MySpriteDrawFrame frame, ScreenZone center, ShipGrid shipGrid, ScanCache cache, bool showDockedMobileGrids, bool showBorder, int rotationSteps);
 
         static partial void DrawCargoOverlay(MySpriteDrawFrame frame, ScreenZone center, ShipGrid shipGrid, ScanCache cache, int rotationSteps, bool showAllConnections, TouchScreenApiAdapter input, UiState ui, bool occludeConveyorUnderFillBars);
 
@@ -2950,10 +2967,15 @@ namespace GridSchematics
 
         static List<OverlayBlockSource> GetOverlaySources(ScanCache cache, ShipGrid shipGrid, string modeName)
         {
+            return GetOverlaySources(cache, shipGrid, modeName, false);
+        }
+
+        static List<OverlayBlockSource> GetOverlaySources(ScanCache cache, ShipGrid shipGrid, string modeName, bool includeDockedMobileGrids)
+        {
             if (cache == null || shipGrid == null || cache.ConstructGrids == null)
                 return new List<OverlayBlockSource>();
 
-            string key = BuildOverlaySourceCacheKey(cache, shipGrid, modeName);
+            string key = BuildOverlaySourceCacheKey(cache, shipGrid, modeName, includeDockedMobileGrids);
             CachedOverlaySources cached;
             if (OverlaySourceCache.TryGetValue(key, out cached) && cached != null)
             {
@@ -2964,40 +2986,71 @@ namespace GridSchematics
             TrackCacheMiss();
 
             cached = new CachedOverlaySources();
-            BuildOverlaySources(cache, shipGrid, modeName, cached.Sources);
+            BuildOverlaySources(cache, shipGrid, modeName, cached.Sources, includeDockedMobileGrids);
             cached.LastUsed = ++CacheUseCounter;
             OverlaySourceCache[key] = cached;
             TrimOverlaySourceCache();
             return cached.Sources;
         }
 
-        static void BuildOverlaySources(ScanCache cache, ShipGrid shipGrid, string modeName, List<OverlayBlockSource> sources)
+        static void BuildOverlaySources(ScanCache cache, ShipGrid shipGrid, string modeName, List<OverlayBlockSource> sources, bool includeDockedMobileGrids)
         {
             for (int i = 0; i < cache.ConstructGrids.Count; i++)
+                AppendOverlaySourcesForGrid(cache.ConstructGrids[i], shipGrid, modeName, sources);
+
+            if (!includeDockedMobileGrids || cache.HullScanTargetGrids == null)
+                return;
+
+            for (int i = 0; i < cache.HullScanTargetGrids.Count; i++)
             {
-                var grid = cache.ConstructGrids[i];
-                if (grid == null || grid.MarkedForClose)
+                var grid = cache.HullScanTargetGrids[i];
+                if (!IsDockedMobileOverlayGrid(cache, grid))
                     continue;
 
-                var blocks = new System.Collections.Generic.List<IMySlimBlock>();
-                grid.GetBlocks(blocks, block => block != null && block.FatBlock != null);
-                for (int b = 0; b < blocks.Count; b++)
-                {
-                    var slim = blocks[b];
-                    var fat = slim.FatBlock;
-                    CargoOverlayRole role;
-                    if (!TryGetOverlayRoleForMode(modeName, fat, out role))
-                        continue;
+                AppendOverlaySourcesForGrid(grid, shipGrid, modeName, sources);
+            }
+        }
 
-                    var projected = ProjectCargoBlockBounds(shipGrid, grid, slim);
-                    sources.Add(new OverlayBlockSource
-                    {
-                        Min = projected.Min,
-                        Max = projected.Max,
-                        Role = role,
-                        Block = fat
-                    });
-                }
+        static void AppendOverlaySourcesForGrid(IMyCubeGrid grid, ShipGrid shipGrid, string modeName, List<OverlayBlockSource> sources)
+        {
+            if (grid == null || grid.MarkedForClose)
+                return;
+
+            var blocks = new System.Collections.Generic.List<IMySlimBlock>();
+            grid.GetBlocks(blocks, block => block != null && block.FatBlock != null);
+            for (int b = 0; b < blocks.Count; b++)
+            {
+                var slim = blocks[b];
+                var fat = slim.FatBlock;
+                CargoOverlayRole role;
+                if (!TryGetOverlayRoleForMode(modeName, fat, out role))
+                    continue;
+
+                var projected = ProjectCargoBlockBounds(shipGrid, grid, slim);
+                sources.Add(new OverlayBlockSource
+                {
+                    Min = projected.Min,
+                    Max = projected.Max,
+                    Role = role,
+                    Block = fat
+                });
+            }
+        }
+
+        static bool IsDockedMobileOverlayGrid(ScanCache cache, IMyCubeGrid grid)
+        {
+            if (cache == null || grid == null || grid.MarkedForClose)
+                return false;
+            if (!cache.IsConnectorHullScanGrid(grid.EntityId))
+                return false;
+
+            try
+            {
+                return !grid.IsStatic;
+            }
+            catch
+            {
+                return true;
             }
         }
 
@@ -3028,7 +3081,13 @@ namespace GridSchematics
 
         static string BuildOverlaySourceCacheKey(ScanCache cache, ShipGrid shipGrid, string modeName)
         {
+            return BuildOverlaySourceCacheKey(cache, shipGrid, modeName, false);
+        }
+
+        static string BuildOverlaySourceCacheKey(ScanCache cache, ShipGrid shipGrid, string modeName, bool includeDockedMobileGrids)
+        {
             int gridCount = cache.ConstructGrids != null ? cache.ConstructGrids.Count : 0;
+            int dockedGridCount = includeDockedMobileGrids && cache != null ? cache.ConnectorHullScanGridCount : 0;
             return modeName + ":" +
                 cache.ConstructId + ":" +
                 cache.LastUpdatedUtc.Ticks + ":" +
@@ -3038,7 +3097,9 @@ namespace GridSchematics
                 shipGrid.Min2D.Y + ":" +
                 shipGrid.Max2D.X + ":" +
                 shipGrid.Max2D.Y + ":" +
-                gridCount;
+                gridCount + ":" +
+                (includeDockedMobileGrids ? "D" : "L") + ":" +
+                dockedGridCount;
         }
 
         static void TrimOverlaySourceCache()
@@ -3827,7 +3888,7 @@ namespace GridSchematics
             signature = signature * 31 + fillCount;
             for (int i = 0; i < fillCount; i++)
             {
-                signature = signature * 31 + (int)(Clamp01(group.FillRatios[i]) * 10000f);
+                signature = signature * 31 + (int)(Clamp01(group.FillRatios[i]) * 100f); // QW2: 1% buckets (was 1/10000) to stop sub-perceptible fill changes thrashing OverlayInfoCache
             }
 
             int stateCount = group.EnabledStates != null ? group.EnabledStates.Count : 0;

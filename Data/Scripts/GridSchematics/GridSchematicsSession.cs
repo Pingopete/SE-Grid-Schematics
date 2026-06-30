@@ -15,12 +15,19 @@ using VRageRender;
 
 namespace GridSchematics
 {
+    public enum PersistedScanLoadStatus
+    {
+        Loaded,
+        Missing,
+        Invalid,
+        Obsolete
+    }
     [MySessionComponentDescriptor(MyUpdateOrder.AfterSimulation)]
     public partial class GridSchematicsSession : MySessionComponentBase
     {
         const string PANEL_TAG = "[GRID_SCHEMATIC]";
         const int PANEL_SCAN_TICK_INTERVAL = 600;
-        const int PERSISTED_SCAN_VERSION = 7;
+        const int PERSISTED_SCAN_VERSION = 10;
         const bool PANEL_CURSOR_LIMIT_SAMPLE_RATE = false;
         const long PANEL_CURSOR_SAMPLE_INTERVAL_TICKS = 10000000L / 30L;
         const ushort PANEL_INTERACTION_INPUT_CHANNEL = 38473;
@@ -44,7 +51,7 @@ namespace GridSchematics
         PanelInteractionInputBlocker _panelInteractionInputBlocker;
         readonly List<string> _panelInteractionBlockedControls = new List<string>(2);
         readonly List<string> _panelInteractionBlockedShipControls = new List<string>(16);
-        readonly List<string> _panelInteractionReleaseControls = new List<string>(18);
+        readonly List<string> _panelInteractionTransitionControls = new List<string>(16);
         bool _panelInteractionBlockedWithShipControls;
         readonly Dictionary<long, ConstructMouseCursorState> _constructMouseCursors = new Dictionary<long, ConstructMouseCursorState>();
 
@@ -97,6 +104,7 @@ namespace GridSchematics
             RegisterPanelCursorDepthOffsetDebugCommand();
             RegisterPanelLayoutSnapshotCommand();
             RegisterPanelLiveMockupCommand();
+            RegisterPanelResolutionDebugCommand();
         }
 
         public override void UpdateAfterSimulation()
@@ -124,6 +132,7 @@ namespace GridSchematics
             }
 
             UpdatePanelLiveMockup(_tickCounter);
+            UpdatePanelResolutionDebug(_tickCounter);
             UpdatePanelInteractionInputBlocker();
         }
 
@@ -139,6 +148,7 @@ namespace GridSchematics
             DrawPanelDiscoveryDebug();
             DrawPanelDiscoveryPolygonDebug();
             DrawPanelCalibrationDebug();
+            DrawPanelResolutionDebug();
         }
 
         protected override void UnloadData()
@@ -159,7 +169,9 @@ namespace GridSchematics
             UnregisterPanelCursorDepthOffsetDebugCommand();
             UnregisterPanelLayoutSnapshotCommand();
             UnregisterPanelLiveMockupCommand();
+            UnregisterPanelResolutionDebugCommand();
             ClearPanelLiveMockup();
+            ClearPanelResolutionDebug();
             SetPanelInteractionInputBlocked(false, false);
             if (_panelInteractionInputBlocker != null)
             {
@@ -179,6 +191,7 @@ namespace GridSchematics
             RegisterPanelCursorDepthOffsetDebugCommand();
             RegisterPanelLayoutSnapshotCommand();
             RegisterPanelLiveMockupCommand();
+            RegisterPanelResolutionDebugCommand();
             RefreshApps();
         }
 
@@ -199,8 +212,7 @@ namespace GridSchematics
                         continue;
                     }
 
-                    var name = panel.CustomName ?? string.Empty;
-                    if (name.ToUpperInvariant().Contains(PANEL_TAG))
+                    if (IsTaggedPanelAppSurface(panel))
                     {
                         updatedPanels.Add(panel);
                     }
@@ -209,8 +221,9 @@ namespace GridSchematics
 
             for (int i = _apps.Count - 1; i >= 0; i--)
             {
-                if (_apps[i].Panel == null || !_apps[i].Panel.IsFunctional)
+                if (_apps[i].Panel == null || !_apps[i].Panel.IsFunctional || !IsTaggedPanelAppSurface(_apps[i].Panel))
                 {
+                    ClearCursorStateForApp(_apps[i]);
                     _apps[i].Dispose();
                     _apps.RemoveAt(i);
                 }
@@ -396,18 +409,21 @@ namespace GridSchematics
                 EnsurePanelInteractionControlLists();
 
                 var playerId = MyAPIGateway.Session.Player.IdentityId;
-                _panelInteractionInputBlocker.SetControlsEnabled(_panelInteractionReleaseControls, playerId, true);
-                if (!blocked)
-                {
-                    _panelInteractionInputBlocked = false;
-                    _panelInteractionBlockedWithShipControls = false;
-                    return;
-                }
+                var previousControls = _panelInteractionInputBlocked
+                    ? (_panelInteractionBlockedWithShipControls ? _panelInteractionBlockedShipControls : _panelInteractionBlockedControls)
+                    : null;
+                var targetControls = blocked
+                    ? (blockShipControls ? _panelInteractionBlockedShipControls : _panelInteractionBlockedControls)
+                    : null;
 
-                _panelInteractionInputBlocker.SetControlsEnabled(
-                    blockShipControls ? _panelInteractionBlockedShipControls : _panelInteractionBlockedControls,
-                    playerId,
-                    !blocked);
+                if (previousControls == null && targetControls == null)
+                    return;
+
+                if (previousControls != null && targetControls != null && ReferenceEquals(previousControls, targetControls))
+                    return;
+
+                SetPanelInteractionControlsEnabledExcept(previousControls, targetControls, playerId, true);
+                SetPanelInteractionControlsEnabledExcept(targetControls, previousControls, playerId, false);
                 _panelInteractionInputBlocked = blocked;
                 _panelInteractionBlockedWithShipControls = blocked && blockShipControls;
             }
@@ -416,6 +432,37 @@ namespace GridSchematics
                 _panelInteractionInputBlocked = false;
                 _panelInteractionBlockedWithShipControls = false;
             }
+        }
+
+        void SetPanelInteractionControlsEnabledExcept(List<string> controls, List<string> except, long playerId, bool enabled)
+        {
+            if (controls == null || controls.Count == 0)
+                return;
+
+            _panelInteractionTransitionControls.Clear();
+            for (int i = 0; i < controls.Count; i++)
+            {
+                string control = controls[i];
+                if (!string.IsNullOrEmpty(control) && !ContainsPanelInteractionControl(except, control))
+                    _panelInteractionTransitionControls.Add(control);
+            }
+
+            if (_panelInteractionTransitionControls.Count > 0)
+                _panelInteractionInputBlocker.SetControlsEnabled(_panelInteractionTransitionControls, playerId, enabled);
+        }
+
+        static bool ContainsPanelInteractionControl(List<string> controls, string control)
+        {
+            if (controls == null || string.IsNullOrEmpty(control))
+                return false;
+
+            for (int i = 0; i < controls.Count; i++)
+            {
+                if (string.Equals(controls[i], control, StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
         }
 
         void EnsurePanelInteractionControlLists()
@@ -441,28 +488,6 @@ namespace GridSchematics
                 _panelInteractionBlockedShipControls.Add(MyControlsSpace.LOOK_UP.String);
                 _panelInteractionBlockedShipControls.Add(MyControlsSpace.LOOK_DOWN.String);
             }
-
-            if (_panelInteractionReleaseControls.Count == 0)
-            {
-                _panelInteractionReleaseControls.Add(MyControlsSpace.PRIMARY_TOOL_ACTION.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.SECONDARY_TOOL_ACTION.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.FORWARD.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.BACKWARD.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.STRAFE_LEFT.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.STRAFE_RIGHT.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.JUMP.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.CROUCH.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.ROLL_LEFT.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.ROLL_RIGHT.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.ROTATION_LEFT.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.ROTATION_RIGHT.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.ROTATION_UP.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.ROTATION_DOWN.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.LOOK_LEFT.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.LOOK_RIGHT.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.LOOK_UP.String);
-                _panelInteractionReleaseControls.Add(MyControlsSpace.LOOK_DOWN.String);
-            }
         }
 
         static void DrawPanelCursorTexture(PanelCursorWorldDrawData cursor, Vector3D normal, Color color, bool enlarged)
@@ -471,7 +496,7 @@ namespace GridSchematics
             const double cursorSurfaceOffset = 0.0008;
             const double hotspotX = 0.16;
             const double hotspotY = 0.18;
-            const double textureRotation = 0.0;
+            const double textureRotation = -Math.PI * 0.25;
 
             double width = enlarged ? cursorSize * 1.22 : cursorSize;
             double height = width;
@@ -527,15 +552,15 @@ namespace GridSchematics
                     if (projectedRight.LengthSquared() > 0.000001)
                     {
                         projectedRight.Normalize();
-                        axisA = -projectedRight;
-                        axisB = -projectedUp;
+                        axisA = projectedRight;
+                        axisB = projectedUp;
                         return true;
                     }
                 }
             }
 
-            axisA = -cursor.AxisA;
-            axisB = -cursor.AxisB;
+            axisA = cursor.AxisA;
+            axisB = cursor.AxisB;
             if (axisA.LengthSquared() <= 0.000001 || axisB.LengthSquared() <= 0.000001)
                 return false;
 
@@ -554,7 +579,7 @@ namespace GridSchematics
         {
             cursor = aimCursor;
             cursorApp = aimedApp;
-            if (aimedApp == null || aimedApp.TouchInput == null || aimedApp.Surface == null)
+            if (!IsAnyCursorAppSelectable(aimedApp))
                 return false;
 
             ConstructMouseCursorState state = GetOrCreateConstructMouseCursor(aimedApp.ConstructId);
@@ -569,19 +594,14 @@ namespace GridSchematics
                 if (altLook)
                     return false;
 
-                state.RawPosition = aimCursor.RawSurfacePoint;
-                state.ActivePanelId = aimedApp.OwnerBlock.EntityId;
-                state.ActiveSurfaceIndex = aimedSurfaceIndex;
-                state.HasPosition = true;
+                SetConstructMouseCursorTarget(state, aimedApp, aimedSurfaceIndex, aimCursor.RawSurfacePoint);
             }
 
             cursorApp = FindMouseCursorApp(aimedApp.ConstructId, state.ActivePanelId, state.ActiveSurfaceIndex);
             if (cursorApp == null)
             {
                 cursorApp = aimedApp;
-                state.ActivePanelId = aimedApp.OwnerBlock.EntityId;
-                state.ActiveSurfaceIndex = GetAppSurfaceIndex(aimedApp);
-                state.RawPosition = ClampRawCursorToSurface(aimedApp.Surface, state.RawPosition);
+                SetConstructMouseCursorTarget(state, aimedApp, aimedSurfaceIndex, aimCursor.RawSurfacePoint);
             }
 
             if (!altLook)
@@ -593,8 +613,14 @@ namespace GridSchematics
                     float sensitivity = GetMouseSensitivityMultiplier(state.Sensitivity);
                     state.RawPosition += new Vector2(mouseX * sensitivity, mouseY * sensitivity);
                     ConstrainMouseCursorToPanelNetwork(aimedApp, ref cursorApp, ref state.RawPosition);
+                    if (cursorApp == null)
+                        return false;
                     state.ActivePanelId = cursorApp.OwnerBlock.EntityId;
                     state.ActiveSurfaceIndex = GetAppSurfaceIndex(cursorApp);
+                }
+                else
+                {
+                    state.RawPosition = ClampRawCursorToSurface(cursorApp.Surface, state.RawPosition);
                 }
             }
             else
@@ -603,7 +629,12 @@ namespace GridSchematics
             }
 
             if (cursorApp == null || cursorApp.TouchInput == null || !cursorApp.TouchInput.TryBuildPanelCursorWorldDrawData(state.RawPosition, out cursor))
-                return false;
+            {
+                cursorApp = aimedApp;
+                SetConstructMouseCursorTarget(state, aimedApp, aimedSurfaceIndex, aimCursor.RawSurfacePoint);
+                if (cursorApp == null || cursorApp.TouchInput == null || !cursorApp.TouchInput.TryBuildPanelCursorWorldDrawData(state.RawPosition, out cursor))
+                    return false;
+            }
 
             cursor.RawSurfacePoint = state.RawPosition;
             return true;
@@ -622,7 +653,10 @@ namespace GridSchematics
 
                 var app = FindMouseCursorApp(entry.Key, state.ActivePanelId, state.ActiveSurfaceIndex);
                 if (app == null || app.TouchInput == null)
+                {
+                    ClearConstructMouseCursorTarget(state);
                     continue;
+                }
 
                 GridSchematicsLcdApp cursorApp = app;
                 if (!IsCurrentAltPressed())
@@ -650,7 +684,10 @@ namespace GridSchematics
 
                 PanelCursorWorldDrawData candidate;
                 if (!app.TouchInput.TryBuildPanelCursorWorldDrawData(state.RawPosition, out candidate))
+                {
+                    ClearConstructMouseCursorTarget(state);
                     continue;
+                }
 
                 if (!IsWorldCursorInFrontOfCamera(candidate.PlaneHit))
                     continue;
@@ -680,11 +717,17 @@ namespace GridSchematics
 
                 var app = FindMouseCursorApp(entry.Key, state.ActivePanelId, state.ActiveSurfaceIndex);
                 if (app == null || app.TouchInput == null)
+                {
+                    ClearConstructMouseCursorTarget(state);
                     continue;
+                }
 
                 PanelCursorWorldDrawData candidate;
                 if (!app.TouchInput.TryBuildPanelCursorWorldDrawData(state.RawPosition, out candidate))
+                {
+                    ClearConstructMouseCursorTarget(state);
                     continue;
+                }
 
                 if (!IsWorldCursorInFrontOfCamera(candidate.PlaneHit))
                     continue;
@@ -712,6 +755,30 @@ namespace GridSchematics
             toPoint.Normalize();
 
             return Vector3D.Dot(camera.Forward, toPoint) > 0.0;
+        }
+
+        static void SetConstructMouseCursorTarget(ConstructMouseCursorState state, GridSchematicsLcdApp app, int surfaceIndex, Vector2 rawPosition)
+        {
+            if (state == null || app == null || app.OwnerBlock == null)
+                return;
+
+            state.RawPosition = ClampRawCursorToSurface(app.Surface, rawPosition);
+            state.ActivePanelId = app.OwnerBlock.EntityId;
+            state.ActiveSurfaceIndex = surfaceIndex;
+            state.HasPosition = true;
+            state.HasPanelFocus = true;
+        }
+
+        static void ClearConstructMouseCursorTarget(ConstructMouseCursorState state)
+        {
+            if (state == null)
+                return;
+
+            state.HasPosition = false;
+            state.HasPanelFocus = false;
+            state.ActivePanelId = 0;
+            state.ActiveSurfaceIndex = -1;
+            state.RawPosition = Vector2.Zero;
         }
 
         void ConstrainMouseCursorToPanelNetwork(GridSchematicsLcdApp aimedApp, ref GridSchematicsLcdApp cursorApp, ref Vector2 rawPosition)
@@ -845,8 +912,11 @@ namespace GridSchematics
             for (int i = apps.Count - 1; i >= 0; i--)
             {
                 var candidate = apps[i];
-                if (candidate == null || !candidate.IsOwnerFunctional)
+                bool requireSurfaceScript = object.ReferenceEquals(apps, _surfaceScriptApps);
+                bool requirePanelTag = object.ReferenceEquals(apps, _apps);
+                if (!IsCursorAppSelectable(candidate, requireSurfaceScript, requirePanelTag))
                 {
+                    ClearCursorStateForApp(candidate);
                     apps.RemoveAt(i);
                     continue;
                 }
@@ -1028,14 +1098,14 @@ namespace GridSchematics
 
         GridSchematicsLcdApp FindMouseCursorApp(long constructId, long panelId, int surfaceIndex)
         {
-            GridSchematicsLcdApp app = FindMouseCursorAppInList(_apps, constructId, panelId, surfaceIndex);
+            GridSchematicsLcdApp app = FindMouseCursorAppInList(_apps, constructId, panelId, surfaceIndex, false, true);
             if (app != null)
                 return app;
 
-            return FindMouseCursorAppInList(_surfaceScriptApps, constructId, panelId, surfaceIndex);
+            return FindMouseCursorAppInList(_surfaceScriptApps, constructId, panelId, surfaceIndex, true, false);
         }
 
-        static GridSchematicsLcdApp FindMouseCursorAppInList(List<GridSchematicsLcdApp> apps, long constructId, long panelId, int surfaceIndex)
+        static GridSchematicsLcdApp FindMouseCursorAppInList(List<GridSchematicsLcdApp> apps, long constructId, long panelId, int surfaceIndex, bool requireSurfaceScript, bool requirePanelTag)
         {
             if (apps == null)
                 return null;
@@ -1043,7 +1113,7 @@ namespace GridSchematics
             for (int i = apps.Count - 1; i >= 0; i--)
             {
                 var app = apps[i];
-                if (app != null && app.OwnerBlock != null && app.IsOwnerFunctional && app.OwnerBlock.EntityId == panelId && app.ConstructId == constructId && app.Config != null && app.Config.Enabled)
+                if (IsCursorAppSelectable(app, requireSurfaceScript, requirePanelTag) && app.OwnerBlock.EntityId == panelId && app.ConstructId == constructId)
                 {
                     if (surfaceIndex < 0 || GetAppSurfaceIndex(app) == surfaceIndex)
                         return app;
@@ -1051,6 +1121,49 @@ namespace GridSchematics
             }
 
             return null;
+        }
+
+        static bool IsTaggedPanelAppSurface(IMyTextPanel panel)
+        {
+            if (panel == null)
+                return false;
+
+            var name = panel.CustomName ?? string.Empty;
+            return name.ToUpperInvariant().Contains(PANEL_TAG);
+        }
+
+        static bool IsSurfaceScriptAppSurface(GridSchematicsLcdApp app)
+        {
+            try
+            {
+                return app != null && app.Surface != null && app.Surface.Script == TEXT_SURFACE_SCRIPT_ID;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        static bool IsCursorAppSelectable(GridSchematicsLcdApp app, bool requireSurfaceScript, bool requirePanelTag)
+        {
+            if (app == null || app.OwnerBlock == null || app.Surface == null || app.TouchInput == null || !app.IsOwnerFunctional || app.Config == null || !app.Config.Enabled)
+                return false;
+
+            if (requireSurfaceScript && !IsSurfaceScriptAppSurface(app))
+                return false;
+
+            if (requirePanelTag && !IsTaggedPanelAppSurface(app.Panel))
+                return false;
+
+            return true;
+        }
+
+        static bool IsAnyCursorAppSelectable(GridSchematicsLcdApp app)
+        {
+            if (!IsCursorAppSelectable(app, false, false))
+                return false;
+
+            return IsSurfaceScriptAppSurface(app) || IsTaggedPanelAppSurface(app.Panel);
         }
 
         static int GetAppSurfaceIndex(GridSchematicsLcdApp app)
@@ -1069,7 +1182,7 @@ namespace GridSchematics
             for (int i = apps.Count - 1; i >= 0; i--)
             {
                 var app = apps[i];
-                if (app != null && app.OwnerBlock != null && app.IsOwnerFunctional && app.OwnerBlock.EntityId == panelId && app.ConstructId == constructId && app.Config != null && app.Config.Enabled)
+                if (IsAnyCursorAppSelectable(app) && app.OwnerBlock.EntityId == panelId && app.ConstructId == constructId)
                     return app;
             }
 
@@ -1128,17 +1241,18 @@ namespace GridSchematics
             PanelCursorWorldDrawData bestCursor = new PanelCursorWorldDrawData();
             GridSchematicsLcdApp bestApp = null;
 
-            ScorePanelSurfaceCursorApps(_apps, ownerBlock, hasPhysicsHit, physicsHit, ref bestApp, ref bestCursor, ref bestScore);
+            ScorePanelSurfaceCursorApps(_apps, ownerBlock, hasPhysicsHit, physicsHit, ref bestApp, ref bestCursor, ref bestScore, false, true);
             for (int i = _surfaceScriptApps.Count - 1; i >= 0; i--)
             {
                 var candidate = _surfaceScriptApps[i];
-                if (candidate == null || !candidate.IsOwnerFunctional)
+                if (!IsCursorAppSelectable(candidate, true, false))
                 {
+                    ClearCursorStateForApp(candidate);
                     _surfaceScriptApps.RemoveAt(i);
                     continue;
                 }
 
-                ScorePanelSurfaceCursorCandidate(candidate, ownerBlock, hasPhysicsHit, physicsHit, ref bestApp, ref bestCursor, ref bestScore);
+                ScorePanelSurfaceCursorCandidate(candidate, ownerBlock, hasPhysicsHit, physicsHit, ref bestApp, ref bestCursor, ref bestScore, true, false);
             }
 
             if (bestApp != null)
@@ -1178,20 +1292,23 @@ namespace GridSchematics
             }
         }
 
-        static void ScorePanelSurfaceCursorApps(List<GridSchematicsLcdApp> apps, IMyCubeBlock ownerBlock, bool hasPhysicsHit, Vector3D physicsHit, ref GridSchematicsLcdApp bestApp, ref PanelCursorWorldDrawData bestCursor, ref double bestScore)
+        static void ScorePanelSurfaceCursorApps(List<GridSchematicsLcdApp> apps, IMyCubeBlock ownerBlock, bool hasPhysicsHit, Vector3D physicsHit, ref GridSchematicsLcdApp bestApp, ref PanelCursorWorldDrawData bestCursor, ref double bestScore, bool requireSurfaceScript, bool requirePanelTag)
         {
             if (apps == null)
                 return;
 
             for (int i = apps.Count - 1; i >= 0; i--)
             {
-                ScorePanelSurfaceCursorCandidate(apps[i], ownerBlock, hasPhysicsHit, physicsHit, ref bestApp, ref bestCursor, ref bestScore);
+                ScorePanelSurfaceCursorCandidate(apps[i], ownerBlock, hasPhysicsHit, physicsHit, ref bestApp, ref bestCursor, ref bestScore, requireSurfaceScript, requirePanelTag);
             }
         }
 
-        static void ScorePanelSurfaceCursorCandidate(GridSchematicsLcdApp app, IMyCubeBlock ownerBlock, bool hasPhysicsHit, Vector3D physicsHit, ref GridSchematicsLcdApp bestApp, ref PanelCursorWorldDrawData bestCursor, ref double bestScore)
+        static void ScorePanelSurfaceCursorCandidate(GridSchematicsLcdApp app, IMyCubeBlock ownerBlock, bool hasPhysicsHit, Vector3D physicsHit, ref GridSchematicsLcdApp bestApp, ref PanelCursorWorldDrawData bestCursor, ref double bestScore, bool requireSurfaceScript, bool requirePanelTag)
         {
-            if (ownerBlock != null && (app == null || app.OwnerBlock == null || app.OwnerBlock.EntityId != ownerBlock.EntityId))
+            if (!IsCursorAppSelectable(app, requireSurfaceScript, requirePanelTag))
+                return;
+
+            if (ownerBlock != null && app.OwnerBlock.EntityId != ownerBlock.EntityId)
                 return;
 
             PanelCursorWorldDrawData candidate;
@@ -1258,7 +1375,7 @@ namespace GridSchematics
         static bool TryRefreshPanelSurfaceCursorApp(GridSchematicsLcdApp app, out PanelCursorWorldDrawData cursor)
         {
             cursor = new PanelCursorWorldDrawData();
-            if (app == null || !app.IsOwnerFunctional || app.TouchInput == null || app.Config == null || !app.Config.Enabled)
+            if (!IsAnyCursorAppSelectable(app))
                 return false;
 
             return app.TouchInput.TryRefreshPanelCursorWorldDrawData(out cursor);
@@ -1429,15 +1546,16 @@ namespace GridSchematics
             for (int i = _apps.Count - 1; i >= 0; i--)
             {
                 var app = _apps[i];
-                if (app != null && app.ShouldDrawAimCursorHud)
+                if (IsCursorAppSelectable(app, false, true) && app.ShouldDrawAimCursorHud)
                     return app;
             }
 
             for (int i = _surfaceScriptApps.Count - 1; i >= 0; i--)
             {
                 var app = _surfaceScriptApps[i];
-                if (app == null || !app.IsOwnerFunctional)
+                if (!IsCursorAppSelectable(app, true, false))
                 {
+                    ClearCursorStateForApp(app);
                     _surfaceScriptApps.RemoveAt(i);
                     continue;
                 }
@@ -1449,26 +1567,46 @@ namespace GridSchematics
             for (int i = _apps.Count - 1; i >= 0; i--)
             {
                 var app = _apps[i];
-                if (app != null && app.IsOwnerFunctional && app.Config.Enabled && app.TouchInput != null)
+                if (IsCursorAppSelectable(app, false, true))
                     return app;
             }
 
             for (int i = _surfaceScriptApps.Count - 1; i >= 0; i--)
             {
                 var app = _surfaceScriptApps[i];
-                if (app == null || !app.IsOwnerFunctional)
+                if (!IsCursorAppSelectable(app, true, false))
                 {
+                    ClearCursorStateForApp(app);
                     _surfaceScriptApps.RemoveAt(i);
                     continue;
                 }
 
-                if (app.Config.Enabled && app.TouchInput != null)
-                    return app;
+                return app;
             }
 
             return null;
         }
 
+        void ClearCursorStateForApp(GridSchematicsLcdApp app)
+        {
+            if (app == null || app.OwnerBlock == null)
+                return;
+
+            long constructId = app.ConstructId;
+            long panelId = app.OwnerBlock.EntityId;
+            int surfaceIndex = GetAppSurfaceIndex(app);
+
+            ConstructMouseCursorState state;
+            if (_constructMouseCursors.TryGetValue(constructId, out state) && state.ActivePanelId == panelId && (surfaceIndex < 0 || state.ActiveSurfaceIndex == surfaceIndex))
+                ClearConstructMouseCursorTarget(state);
+
+            SharedGridCursor shared;
+            if (_sharedCursors.TryGetValue(constructId, out shared) && shared.IsFromPanel(panelId))
+                ClearSharedCursor(constructId, _tickCounter);
+
+            if (_panelCursorDrawApp == app)
+                ClearPanelCursorDrawCache();
+        }
         public void RegisterSurfaceScriptApp(GridSchematicsLcdApp app)
         {
             if (app == null)
@@ -1491,7 +1629,10 @@ namespace GridSchematics
             for (int i = _surfaceScriptApps.Count - 1; i >= 0; i--)
             {
                 if (_surfaceScriptApps[i] == app)
+                {
+                    ClearCursorStateForApp(app);
                     _surfaceScriptApps.RemoveAt(i);
+                }
             }
         }
 
@@ -1648,10 +1789,7 @@ namespace GridSchematics
             state.Enabled = enabled;
             if (!enabled)
             {
-                state.HasPosition = false;
-                state.HasPanelFocus = false;
-                state.ActivePanelId = 0;
-                state.ActiveSurfaceIndex = -1;
+                ClearConstructMouseCursorTarget(state);
             }
         }
 
@@ -1666,10 +1804,7 @@ namespace GridSchematics
             state.Enabled = enabled;
             if (!enabled)
             {
-                state.HasPosition = false;
-                state.HasPanelFocus = false;
-                state.ActivePanelId = 0;
-                state.ActiveSurfaceIndex = -1;
+                ClearConstructMouseCursorTarget(state);
             }
 
             ApplyMouseControlToApps(_apps, constructId, enabled);
@@ -1693,8 +1828,9 @@ namespace GridSchematics
             for (int i = apps.Count - 1; i >= 0; i--)
             {
                 var app = apps[i];
-                if (app == null || !app.IsOwnerFunctional)
+                if (!IsAnyCursorAppSelectable(app))
                 {
+                    ClearCursorStateForApp(app);
                     apps.RemoveAt(i);
                     continue;
                 }
@@ -1712,8 +1848,9 @@ namespace GridSchematics
             for (int i = apps.Count - 1; i >= 0; i--)
             {
                 var app = apps[i];
-                if (app == null || !app.IsOwnerFunctional)
+                if (!IsAnyCursorAppSelectable(app))
                 {
+                    ClearCursorStateForApp(app);
                     apps.RemoveAt(i);
                     continue;
                 }
@@ -1774,8 +1911,13 @@ namespace GridSchematics
 
         public bool TryLoadPersistedScan(ScanCache cache, IMyCubeGrid rootGrid)
         {
+            return LoadPersistedScan(cache, rootGrid) == PersistedScanLoadStatus.Loaded;
+        }
+
+        public PersistedScanLoadStatus LoadPersistedScan(ScanCache cache, IMyCubeGrid rootGrid)
+        {
             if (cache == null || rootGrid == null || MyAPIGateway.Utilities == null)
-                return false;
+                return PersistedScanLoadStatus.Invalid;
 
             TextReader reader = null;
             try
@@ -1784,16 +1926,22 @@ namespace GridSchematics
                 string versionLine = reader.ReadLine();
                 string constructLine = reader.ReadLine();
                 string signatureLine = reader.ReadLine();
-                if (versionLine != "VERSION=" + PERSISTED_SCAN_VERSION)
-                    return false;
+                if (versionLine == null && constructLine == null && signatureLine == null)
+                    return PersistedScanLoadStatus.Missing;
+
+                int persistedVersion;
+                if (!TryParsePersistedInt(versionLine, "VERSION=", out persistedVersion))
+                    return PersistedScanLoadStatus.Obsolete;
+                if (persistedVersion != PERSISTED_SCAN_VERSION)
+                    return PersistedScanLoadStatus.Obsolete;
                 if (constructLine != "CONSTRUCT=" + cache.ConstructId)
-                    return false;
+                    return PersistedScanLoadStatus.Obsolete;
 
                 string signature = cache.BuildScanSignature(rootGrid);
                 if (signatureLine != "SIGNATURE=" + signature)
-                    return false;
+                    return PersistedScanLoadStatus.Invalid;
 
-                int loadedViews = 0;
+                var loadedData = new Dictionary<ScanView, RawRaycastScanData>();
                 string line;
                 while ((line = reader.ReadLine()) != null)
                 {
@@ -1802,7 +1950,7 @@ namespace GridSchematics
 
                     ScanView view;
                     if (!TryParseScanView(line.Substring(5), out view))
-                        return false;
+                        return PersistedScanLoadStatus.Obsolete;
 
                     int resolution = ParseRequiredInt(reader.ReadLine(), "RESOLUTION=");
                     int hitSampleCount = ParseRequiredInt(reader.ReadLine(), "HIT_SAMPLES=");
@@ -1829,36 +1977,43 @@ namespace GridSchematics
                     {
                         var sampleLine = reader.ReadLine();
                         if (sampleLine == null)
-                            return false;
+                            return PersistedScanLoadStatus.Obsolete;
 
                         LoadPersistedSample(data, sampleLine);
                     }
 
                     if (reader.ReadLine() != "ENDVIEW")
-                        return false;
+                        return PersistedScanLoadStatus.Obsolete;
 
-                    cache.RaycastData[view] = data;
-                    loadedViews++;
+                    loadedData[view] = data;
                 }
 
-                bool complete = cache.GetRaycastData(ScanView.Top) != null &&
-                    cache.GetRaycastData(ScanView.Side) != null &&
-                    cache.GetRaycastData(ScanView.Front) != null;
-                if (complete)
-                {
-                    cache.UpdateConstructProjection(rootGrid, ScanView.Top, true);
-                    cache.UpdateConstructProjection(rootGrid, ScanView.Side, true);
-                    cache.UpdateConstructProjection(rootGrid, ScanView.Front, true);
-                    cache.GetOrCreateConveyorNetwork(rootGrid, true);
-                    cache.MarkStartupScanCompleted();
-                    return true;
-                }
+                RawRaycastScanData top = null;
+                RawRaycastScanData side = null;
+                RawRaycastScanData front = null;
+                bool complete = loadedData.TryGetValue(ScanView.Top, out top) &&
+                    loadedData.TryGetValue(ScanView.Side, out side) &&
+                    loadedData.TryGetValue(ScanView.Front, out front);
+                if (!complete)
+                    return PersistedScanLoadStatus.Obsolete;
 
-                return false;
+                cache.RaycastData[ScanView.Top] = top;
+                cache.RaycastData[ScanView.Side] = side;
+                cache.RaycastData[ScanView.Front] = front;
+                cache.UpdateConstructProjection(rootGrid, ScanView.Top, true);
+                cache.UpdateConstructProjection(rootGrid, ScanView.Side, true);
+                cache.UpdateConstructProjection(rootGrid, ScanView.Front, true);
+                cache.GetOrCreateConveyorNetwork(rootGrid, true);
+                cache.MarkStartupScanCompleted();
+                return PersistedScanLoadStatus.Loaded;
+            }
+            catch (FileNotFoundException)
+            {
+                return PersistedScanLoadStatus.Missing;
             }
             catch
             {
-                return false;
+                return PersistedScanLoadStatus.Invalid;
             }
             finally
             {
@@ -1866,7 +2021,6 @@ namespace GridSchematics
                     reader.Dispose();
             }
         }
-
         public void SavePersistedScan(ScanCache cache, IMyCubeGrid rootGrid)
         {
             if (cache == null || rootGrid == null || MyAPIGateway.Utilities == null)
@@ -1990,6 +2144,14 @@ namespace GridSchematics
             return false;
         }
 
+        static bool TryParsePersistedInt(string line, string prefix, out int value)
+        {
+            value = 0;
+            if (line == null || !line.StartsWith(prefix, StringComparison.Ordinal))
+                return false;
+
+            return int.TryParse(line.Substring(prefix.Length), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+        }
         static int ParseRequiredInt(string line, string prefix)
         {
             return int.Parse(StripPrefix(line, prefix), CultureInfo.InvariantCulture);
@@ -2013,4 +2175,15 @@ namespace GridSchematics
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
 

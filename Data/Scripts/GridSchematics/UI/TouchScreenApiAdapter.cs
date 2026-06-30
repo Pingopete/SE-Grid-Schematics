@@ -1,4 +1,4 @@
-using Sandbox.ModAPI;
+﻿using Sandbox.ModAPI;
 using System;
 using System.Collections.Generic;
 using VRage.Game;
@@ -190,6 +190,12 @@ namespace GridSchematics
             _mouseControlRawPosition = rawPosition;
         }
 
+        public void ConsumeCurrentPrimaryPress()
+        {
+            _reportedCurrentPress = true;
+            LastHitRegionId = string.Empty;
+            _capturedPrimaryClickRegionId = string.Empty;
+        }
         public void ClearHitRegions()
         {
             _hitRegions.Clear();
@@ -1536,3 +1542,5 @@ namespace GridSchematics
         }
     }
 }
+
+

@@ -46,8 +46,14 @@ namespace GridSchematics
         static UiMetrics BuildInfoPanelHeaderMetrics(ScreenZone zone, GridSchematicsLcdApp app)
         {
             if (app != null && app.Surface != null)
-                return UiLayout.BuildChromeMetrics((int)app.Surface.SurfaceSize.X, (int)app.Surface.SurfaceSize.Y);
-            return UiLayout.BuildChromeMetrics(zone.Width, 512);
+            {
+                int screenWidth = (int)app.Surface.SurfaceSize.X;
+                int screenHeight = (int)app.Surface.SurfaceSize.Y;
+                if (app.Ui != null && app.Ui.ActiveOverlay == OverlayMode.Cargo && screenWidth == 1024 && screenHeight == 1024)
+                    return UiLayout.BuildMetrics(screenWidth, screenHeight);
+                return UiLayout.BuildChromeMetrics(screenWidth, screenHeight);
+            }
+            return zone.Width == 1024 && zone.Height == 368 ? UiLayout.BuildMetrics(1024, 1024) : UiLayout.BuildChromeMetrics(zone.Width, 512);
         }
 
         static void DrawSystemsInfoPanel(MySpriteDrawFrame frame, ScreenZone zone, GridSchematicsLcdApp app, bool isCursorOnlyRender)
@@ -63,7 +69,7 @@ namespace GridSchematics
             AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", panelCenter, panelSize, UiPanelFillSoft));
             DrawScreenRectBorder(frame, panelCenter, panelSize, UiAccentDim);
             DrawInfoDrawerToggleBehindHeader(frame, app);
-            if (app.Ui.InfoPanelMode == InfoPanelMode.Systems && ((app.Ui.SelectedBlockStackItems != null && app.Ui.SelectedBlockStackItems.Count > 0) || GetManualBlockGroupCount(app.Ui) > 0))
+            if (app.Ui.InfoPanelMode == InfoPanelMode.Systems && (app.Ui.ActiveOverlay == OverlayMode.Cargo || (app.Ui.SelectedBlockStackItems != null && app.Ui.SelectedBlockStackItems.Count > 0) || GetManualBlockGroupCount(app.Ui) > 0))
                 DrawInfoPanelHeaderTabs(frame, zone, app);
             else
                 DrawInfoPanelHeader(frame, zone, GetInfoPanelHeading(app));
@@ -174,7 +180,7 @@ namespace GridSchematics
 
         static void DrawInfoPanelHeader(MySpriteDrawFrame frame, ScreenZone zone, string heading)
         {
-            var metrics = UiLayout.BuildChromeMetrics(zone.Width, 512);
+            var metrics = zone.Width == 1024 && zone.Height == 368 ? UiLayout.BuildMetrics(1024, 1024) : UiLayout.BuildChromeMetrics(zone.Width, 512);
             int headerHeight = metrics.InfoHeaderHeight;
             var headerCenter = new Vector2(zone.X + zone.Width * 0.5f, zone.Y + headerHeight * 0.5f);
             AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", headerCenter, new Vector2(zone.Width, headerHeight), UiMenuButtonFill));
@@ -191,7 +197,7 @@ namespace GridSchematics
                 new Vector2(labelCenter.X, labelCenter.Y - metrics.S(6f)),
                 null,
                 UiText,
-                CurrentTextFontId,
+                InfoDrawerTextFontId,
                 TextAlignment.CENTER,
                 metrics.SmallText
             ));
@@ -211,14 +217,24 @@ namespace GridSchematics
             int manualGroupCount = GetManualBlockGroupCount(ui);
             bool manualSelectionAvailable = manualGroupCount > 0;
             bool manualSelected = IsManualSelectedBlockStack(ui);
+            bool auxAvailable = app != null && app.Ui != null && app.Ui.ActiveOverlay == OverlayMode.Cargo && app.HasAuxiliaryStaticCargoSource();
+            bool auxActive = auxAvailable && string.Equals(app.Ui.CargoInfoSource ?? "LOCAL", "AUX", StringComparison.Ordinal);
             int metricScreenWidth = app != null && app.Surface != null ? (int)app.Surface.SurfaceSize.X : zone.Width;
             int metricScreenHeight = app != null && app.Surface != null ? (int)app.Surface.SurfaceSize.Y : 512;
-            if (app != null && app.Ui.ActiveOverlay == OverlayMode.Cargo && metricScreenWidth == 512 && metricScreenHeight == 512)
+            if (app != null && app.Ui.ActiveOverlay == OverlayMode.Cargo && ((metricScreenWidth == 512 && metricScreenHeight == 512) || (metricScreenWidth == 1024 && metricScreenHeight == 1024)))
             {
-                const int slot = 64;
-                var fixedAllRegion = new HitRegion(0, zone.Y, slot, headerHeight, UiLayout.InfoPanelAllTabId, "Show all blocks");
-                DrawInfoHeaderButton(frame, fixedAllRegion, "ALL", ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex, string.Equals(hoverId, fixedAllRegion.Id, StringComparison.Ordinal));
-                int fixedX = slot;
+                int canonicalScale = metricScreenWidth == 1024 ? 2 : 1;
+                int slot = 64 * canonicalScale;
+                int fixedX = 0;
+                if (auxAvailable)
+                {
+                    var auxRegion = new HitRegion(fixedX, zone.Y, slot, headerHeight, UiLayout.InfoPanelAuxTabId, "Show auxiliary connected static grid");
+                    DrawInfoHeaderButton(frame, auxRegion, "AUX", auxActive, string.Equals(hoverId, auxRegion.Id, StringComparison.Ordinal));
+                    fixedX += slot;
+                }
+                var fixedAllRegion = new HitRegion(fixedX, zone.Y, slot, headerHeight, UiLayout.InfoPanelAllTabId, auxAvailable ? "Show local cargo blocks" : "Show all blocks");
+                DrawInfoHeaderButton(frame, fixedAllRegion, auxAvailable ? "LOCAL" : "ALL", !auxActive && ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex, string.Equals(hoverId, fixedAllRegion.Id, StringComparison.Ordinal));
+                fixedX += slot;
                 if (manualGroupCount > 0)
                 {
                     var group1Region = new HitRegion(fixedX, zone.Y, slot, headerHeight, UiLayout.InfoPanelStackTabId, "Show group");
@@ -262,8 +278,14 @@ namespace GridSchematics
 
             int pinnedWidth = UiLayout.InfoPanelPinnedTabWidth(metricScreenWidth, metrics);
             int x = zone.X;
-            var allRegion = new HitRegion(x, zone.Y, pinnedWidth, headerHeight, UiLayout.InfoPanelAllTabId, "Show all blocks");
-            DrawInfoHeaderButton(frame, allRegion, "ALL", ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex, string.Equals(hoverId, allRegion.Id, StringComparison.Ordinal));
+            if (auxAvailable)
+            {
+                var auxRegion = new HitRegion(x, zone.Y, pinnedWidth, headerHeight, UiLayout.InfoPanelAuxTabId, "Show auxiliary connected static grid");
+                DrawInfoHeaderButton(frame, auxRegion, "AUX", auxActive, string.Equals(hoverId, auxRegion.Id, StringComparison.Ordinal));
+                x += pinnedWidth;
+            }
+            var allRegion = new HitRegion(x, zone.Y, pinnedWidth, headerHeight, UiLayout.InfoPanelAllTabId, auxAvailable ? "Show local cargo blocks" : "Show all blocks");
+            DrawInfoHeaderButton(frame, allRegion, auxAvailable ? "LOCAL" : "ALL", !auxActive && ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex, string.Equals(hoverId, allRegion.Id, StringComparison.Ordinal));
             x += pinnedWidth;
             if (manualGroupCount > 0)
             {
@@ -324,12 +346,12 @@ namespace GridSchematics
             {
                 AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(stripX + 12f, centerY), new Vector2(24f, headerHeight), UiMenuButtonFill));
                 AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(stripX + 7f, centerY), new Vector2(6f, 6f), UiSelected, null, TextAlignment.CENTER, -1.5708f));
-                AddSprite(frame, new MySprite(SpriteType.TEXT, hiddenLeft.ToString(), new Vector2(stripX + 14f, y + headerHeight * 0.5f - 5f), null, UiSelected, CurrentTextFontId, TextAlignment.LEFT, 0.22f));
+                AddSprite(frame, new MySprite(SpriteType.TEXT, hiddenLeft.ToString(), new Vector2(stripX + 14f, y + headerHeight * 0.5f - 5f), null, UiSelected, InfoDrawerTextFontId, TextAlignment.LEFT, 0.22f));
             }
             if (hiddenRight > 0)
             {
                 AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(stripRight - 12f, centerY), new Vector2(24f, headerHeight), UiMenuButtonFill));
-                AddSprite(frame, new MySprite(SpriteType.TEXT, hiddenRight.ToString(), new Vector2(stripRight - 18f, y + headerHeight * 0.5f - 5f), null, UiSelected, CurrentTextFontId, TextAlignment.RIGHT, 0.22f));
+                AddSprite(frame, new MySprite(SpriteType.TEXT, hiddenRight.ToString(), new Vector2(stripRight - 18f, y + headerHeight * 0.5f - 5f), null, UiSelected, InfoDrawerTextFontId, TextAlignment.RIGHT, 0.22f));
                 AddSprite(frame, new MySprite(SpriteType.TEXTURE, "Triangle", new Vector2(stripRight - 7f, centerY), new Vector2(6f, 6f), UiSelected, null, TextAlignment.CENTER, 1.5708f));
             }
         }
@@ -667,7 +689,7 @@ namespace GridSchematics
                 case OverlayMode.Cargo:
                     return "CARGO";
                 case OverlayMode.Engines:
-                    return "ENGINES";
+                    return "THRUST";
                 case OverlayMode.Power:
                     return "POWER";
                 case OverlayMode.Oxygen:

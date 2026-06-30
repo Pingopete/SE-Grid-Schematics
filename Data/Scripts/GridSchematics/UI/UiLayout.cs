@@ -29,6 +29,7 @@ namespace GridSchematics
         public float AspectRatio;
         public UiSurfaceLayoutMode Mode;
         public bool IsCanonical512Square;
+        public bool IsCanonical1024Square;
         public bool UsesCompactScaling;
         public bool IsWide;
         public bool IsTall;
@@ -120,6 +121,7 @@ namespace GridSchematics
         public const string MenuToolsId = "menu:tools";
         public const string ToggleChromeId = "menu:chrome";
         public const string ToggleInfoPanelId = "menu:info";
+        public const string InfoPanelAuxTabId = "info:tab:aux";
         public const string InfoPanelAllTabId = "info:tab:all";
         public const string InfoPanelStackTabId = "info:tab:stack";
         public const string InfoPanelGroup2TabId = "info:tab:group2";
@@ -138,6 +140,9 @@ namespace GridSchematics
         public const string ToggleReferenceId = "layer:reference";
         public const string ToggleConveyorId = "layer:conveyor";
         public const string ToggleFillBarsId = "layer:fillbars";
+        public const string ToggleCenterOfMassId = "layer:centerofmass";
+        public const string TogglePanelPositionId = "layer:panelposition";
+        public const string ToggleDockedMobileGridsId = "layer:dockedmobilegrids";
         public const string ToggleAllConnectionsId = "layer:connections";
         public const string ToggleBlocksOccludeConveyorsId = "schematics:occlude_conveyors";
         public const string ToggleConnectedNetworksId = "schematics:connected_networks";
@@ -250,8 +255,9 @@ namespace GridSchematics
             float scale = minSide / 512f;
             if (scale < 0.68f)
                 scale = 0.68f;
-            if (scale > 1.35f)
-                scale = 1.35f;
+            float maxScale = profile.IsCanonical1024Square ? 2f : 1.35f;
+            if (scale > maxScale)
+                scale = maxScale;
 
             var metrics = new UiMetrics();
             metrics.Scale = scale;
@@ -299,6 +305,7 @@ namespace GridSchematics
             profile.MinSide = width < height ? width : height;
             profile.AspectRatio = height > 0 ? width / (float)height : 1f;
             profile.IsCanonical512Square = width == 512 && height == 512;
+            profile.IsCanonical1024Square = width == 1024 && height == 1024;
             profile.UsesCompactScaling = profile.MinSide < 512;
             profile.IsWide = width > height * 1.35f;
             profile.IsTall = height > width * 1.20f;
@@ -478,6 +485,8 @@ namespace GridSchematics
 
             if (center.Width == 512 && center.Height == 480)
                 return new ScreenZone(ScreenZoneType.CenterViewport, center.X, 312, center.Width, 184);
+            if (center.Width == 1024 && center.Height == 992)
+                return new ScreenZone(ScreenZoneType.CenterViewport, center.X, center.Y + center.Height - 368, center.Width, 368);
 
             var metrics = BuildMetrics(center.Width, center.Height);
             var headerMetrics = BuildChromeMetrics(center.Width, center.Height);
@@ -699,7 +708,7 @@ namespace GridSchematics
             var topRegions = BuildTopMenuRegions(screenWidth, screenHeight);
             HitRegion tools = topRegions[topRegions.Length - 1];
             int size = metrics.TopRowHeight;
-            int count = 7;
+            int count = 10;
             int totalWidth = size * count;
             int x = tools.X + tools.Width / 2 - totalWidth / 2;
             if (x < 0)
@@ -716,7 +725,10 @@ namespace GridSchematics
                 new HitRegion(x + size * 3, y, size, size, ToggleHullScanId, "Toggle hull scan layer"),
                 new HitRegion(x + size * 4, y, size, size, CycleScanModeId, "Cycle scan interpretation"),
                 new HitRegion(x + size * 5, y, size, size, CycleScanColorScaleId, "Cycle scan color scale"),
-                new HitRegion(x + size * 6, y, size, size, ToggleGridId, "Cycle block grid")
+                new HitRegion(x + size * 6, y, size, size, ToggleGridId, "Cycle block grid"),
+                new HitRegion(x + size * 7, y, size, size, ToggleDockedMobileGridsId, "Toggle docked mobile ship overlays"),
+                new HitRegion(x + size * 8, y, size, size, ToggleCenterOfMassId, "Toggle center of mass marker"),
+                new HitRegion(x + size * 9, y, size, size, TogglePanelPositionId, "Toggle panel position marker")
             };
         }
 
@@ -816,7 +828,7 @@ namespace GridSchematics
             return BuildInfoPanelBlockTabRegions(screenWidth, screenHeight, items, scrollIndex, false);
         }
 
-        public static HitRegion[] BuildInfoPanelBlockTabRegions(int screenWidth, int screenHeight, List<BlockStackItem> items, int scrollIndex, bool cargoPanel, bool manualSelectionAvailable = false, int manualGroupCount = 0)
+        public static HitRegion[] BuildInfoPanelBlockTabRegions(int screenWidth, int screenHeight, List<BlockStackItem> items, int scrollIndex, bool cargoPanel, bool manualSelectionAvailable = false, int manualGroupCount = 0, bool auxiliaryAvailable = false)
         {
             int itemCount = items != null ? items.Count : 0;
             if (manualSelectionAvailable && manualGroupCount <= 0)
@@ -832,11 +844,20 @@ namespace GridSchematics
             var regions = new List<HitRegion>();
             int y = zone.Y;
 
-            if (cargoPanel && profile.IsCanonical512Square)
+            if (cargoPanel && (profile.IsCanonical512Square || profile.IsCanonical1024Square))
             {
-                const int slot = 64;
-                regions.Add(new HitRegion(0, y, slot, headerHeight, InfoPanelAllTabId, "Show all blocks"));
-                int x = slot;
+                int canonicalScale = profile.IsCanonical1024Square ? 2 : 1;
+                int slot = 64 * canonicalScale;
+                if (profile.IsCanonical1024Square)
+                    headerHeight = 32;
+                int x = 0;
+                if (auxiliaryAvailable)
+                {
+                    regions.Add(new HitRegion(x, y, slot, headerHeight, InfoPanelAuxTabId, "Show auxiliary connected static grid"));
+                    x += slot;
+                }
+                regions.Add(new HitRegion(x, y, slot, headerHeight, InfoPanelAllTabId, auxiliaryAvailable ? "Show local cargo blocks" : "Show all blocks"));
+                x += slot;
                 if (manualGroupCount > 0)
                 {
                     regions.Add(new HitRegion(x, y, slot, headerHeight, InfoPanelStackTabId, "Show group"));
@@ -875,7 +896,12 @@ namespace GridSchematics
 
             int pinnedWidth = InfoPanelPinnedTabWidth(screenWidth, metrics);
             int cursorX = zone.X;
-            regions.Add(new HitRegion(cursorX, y, pinnedWidth, headerHeight, InfoPanelAllTabId, "Show all blocks"));
+            if (cargoPanel && auxiliaryAvailable)
+            {
+                regions.Add(new HitRegion(cursorX, y, pinnedWidth, headerHeight, InfoPanelAuxTabId, "Show auxiliary connected static grid"));
+                cursorX += pinnedWidth;
+            }
+            regions.Add(new HitRegion(cursorX, y, pinnedWidth, headerHeight, InfoPanelAllTabId, cargoPanel && auxiliaryAvailable ? "Show local cargo blocks" : "Show all blocks"));
             cursorX += pinnedWidth;
             if (manualGroupCount > 0)
             {
@@ -1114,7 +1140,7 @@ namespace GridSchematics
             }
         }
 
-        public static HitRegion[] BuildBottomSchematicRegions(int screenWidth, int screenHeight)
+        public static HitRegion[] BuildBottomSchematicRegions(int screenWidth, int screenHeight, bool includeThrust = true)
         {
             var metrics = BuildChromeMetrics(screenWidth, screenHeight);
             var profile = BuildSurfaceProfile(screenWidth, screenHeight);
@@ -1126,29 +1152,48 @@ namespace GridSchematics
                 int availableWidth = screenWidth - reservedInfoWidth;
                 if (availableWidth < 4)
                     availableWidth = screenWidth;
-                int baseWidth = availableWidth / 4;
-                int remainder = availableWidth - baseWidth * 4;
+                int buttonCount = includeThrust ? 4 : 3;
+                int baseWidth = availableWidth / buttonCount;
+                int remainder = availableWidth - baseWidth * buttonCount;
                 int compactX = 0;
 
                 var cargo = new HitRegion(compactX, compactY, baseWidth, compactButtonHeight, SchematicCargoId, "Cargo schematic layer");
                 compactX += cargo.Width;
-                var engines = new HitRegion(compactX, compactY, baseWidth, compactButtonHeight, SchematicEnginesId, "Engines schematic layer");
-                compactX += engines.Width;
-                var power = new HitRegion(compactX, compactY, baseWidth, compactButtonHeight, SchematicPowerId, "Power schematic layer");
-                compactX += power.Width;
-                var oxygen = new HitRegion(compactX, compactY, baseWidth + remainder, compactButtonHeight, SchematicOxygenId, "Oxygen schematic layer");
-
-                return new[] { cargo, engines, power, oxygen };
+                if (includeThrust)
+                {
+                    var engines = new HitRegion(compactX, compactY, baseWidth, compactButtonHeight, SchematicEnginesId, "Thrust schematic layer");
+                    compactX += engines.Width;
+                    var power = new HitRegion(compactX, compactY, baseWidth, compactButtonHeight, SchematicPowerId, "Power schematic layer");
+                    compactX += power.Width;
+                    var oxygen = new HitRegion(compactX, compactY, baseWidth + remainder, compactButtonHeight, SchematicOxygenId, "Oxygen schematic layer");
+                    return new[] { cargo, engines, power, oxygen };
+                }
+                else
+                {
+                    var power = new HitRegion(compactX, compactY, baseWidth, compactButtonHeight, SchematicPowerId, "Power schematic layer");
+                    compactX += power.Width;
+                    var oxygen = new HitRegion(compactX, compactY, baseWidth + remainder, compactButtonHeight, SchematicOxygenId, "Oxygen schematic layer");
+                    return new[] { cargo, power, oxygen };
+                }
             }
 
             int buttonHeight = metrics.BottomStripHeight;
             int y = screenHeight - metrics.BottomStripHeight;
+            if (includeThrust)
+            {
+                return new[]
+                {
+                    new HitRegion(0, y, 64, buttonHeight, SchematicCargoId, "Cargo schematic layer"),
+                    new HitRegion(64, y, 64, buttonHeight, SchematicEnginesId, "Thrust schematic layer"),
+                    new HitRegion(128, y, 64, buttonHeight, SchematicPowerId, "Power schematic layer"),
+                    new HitRegion(192, y, 64, buttonHeight, SchematicOxygenId, "Atmosphere schematic layer")
+                };
+            }
             return new[]
             {
                 new HitRegion(0, y, 64, buttonHeight, SchematicCargoId, "Cargo schematic layer"),
-                new HitRegion(64, y, 64, buttonHeight, SchematicEnginesId, "Engines schematic layer"),
-                new HitRegion(128, y, 64, buttonHeight, SchematicPowerId, "Power schematic layer"),
-                new HitRegion(192, y, 64, buttonHeight, SchematicOxygenId, "Atmosphere schematic layer")
+                new HitRegion(64, y, 64, buttonHeight, SchematicPowerId, "Power schematic layer"),
+                new HitRegion(128, y, 64, buttonHeight, SchematicOxygenId, "Atmosphere schematic layer")
             };
         }
         public static HitRegion[] BuildCargoInfoPanelRegions(int screenWidth, int screenHeight, bool fullPanel, bool filterDropdownOpen, string rightPanelMode)
@@ -1157,8 +1202,12 @@ namespace GridSchematics
             if (!profile.AllowInfoPanel)
                 return new HitRegion[0];
 
-            if (profile.IsCanonical512Square && fullPanel)
-                return BuildCanonicalCargoInfoPanelRegions(filterDropdownOpen, !string.Equals(rightPanelMode, "ACTIONS", StringComparison.OrdinalIgnoreCase));
+            if ((profile.IsCanonical512Square || profile.IsCanonical1024Square) && fullPanel)
+            {
+                var canonicalZones = BuildZones(screenWidth, screenHeight);
+                var canonicalPanel = BuildCargoInfoPanelZone(canonicalZones.Center, true);
+                return BuildCanonicalCargoInfoPanelRegions(filterDropdownOpen, !string.Equals(rightPanelMode, "ACTIONS", StringComparison.OrdinalIgnoreCase), profile.IsCanonical1024Square ? 2 : 1, canonicalPanel.Y);
+            }
 
             bool transferMode = !string.Equals(rightPanelMode, "ACTIONS", StringComparison.OrdinalIgnoreCase);
             var zones = BuildZones(screenWidth, screenHeight);
@@ -1257,7 +1306,7 @@ namespace GridSchematics
 
             return regions.ToArray();
         }
-        static HitRegion[] BuildCanonicalCargoInfoPanelRegions(bool filterDropdownOpen, bool transferMode)
+        static HitRegion[] BuildCanonicalCargoInfoPanelRegions(bool filterDropdownOpen, bool transferMode, int scale, int panelY)
         {
             var regions = new List<HitRegion>();
             regions.Add(new HitRegion(0, 428, 168, 68, CargoInfoBlockScrollId, "Scroll cargo block bars"));
@@ -1335,7 +1384,26 @@ namespace GridSchematics
                     regions.Add(new HitRegion(248, 344 + i * 16, 84, 16, CargoInfoFilterPrefix + dropdownCategories[i], "Filter cargo mix"));
             }
 
-            return regions.ToArray();
+            return ScaleCanonicalCargoInfoPanelRegions(regions, scale, panelY);
+        }
+        static HitRegion[] ScaleCanonicalCargoInfoPanelRegions(List<HitRegion> regions, int scale, int panelY)
+        {
+            if (scale <= 1)
+                return regions.ToArray();
+
+            var scaled = new HitRegion[regions.Count];
+            for (int i = 0; i < regions.Count; i++)
+            {
+                var region = regions[i];
+                scaled[i] = new HitRegion(
+                    region.X * scale,
+                    panelY + (region.Y - 312) * scale,
+                    region.Width * scale,
+                    region.Height * scale,
+                    region.Id,
+                    region.Hint);
+            }
+            return scaled;
         }
         public static HitRegion[] BuildSegmentScanControlRegions(ScreenZone zone)
         {

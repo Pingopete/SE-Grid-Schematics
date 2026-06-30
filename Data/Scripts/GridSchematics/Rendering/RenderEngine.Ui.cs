@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using VRage.Game.ModAPI;
 using VRage.Game.GUI.TextPanel;
@@ -34,7 +34,7 @@ namespace GridSchematics
             public int LastUsed;
         }
 
-        static partial void DrawTopMenu(MySpriteDrawFrame frame, int screenWidth, int screenHeight, MenuPanel activeMenu, string activeView, bool showBlocks, bool showBorder, bool showHullScan, bool showGrid, bool showDebug, bool showPerfStats, bool showReference, bool showConveyorOverlay, bool showFillBars, bool showAllConnections, bool blurScan, string fillMode, string uiPalette, int uiHue, float uiBrightness, float uiSaturation, float uiAlpha, int uiAccentHue, float uiAccentBrightness, float uiAccentSaturation, float uiPanelBrightness, float uiPanelAlpha, int schematicMainHue, int schematicSecondaryHue, int conveyorHue, float hullScanAlpha, float schematicAlpha, string storageColor, string effectorColor, bool segmentMode, bool mouseControl, string mouseSensitivity, bool allowGridRotation, bool performanceMode, bool highResScanning, int settingsExpandedMask, string activeSettingsActionId, string hoverRegionId)
+        static partial void DrawTopMenu(MySpriteDrawFrame frame, int screenWidth, int screenHeight, MenuPanel activeMenu, string activeView, bool showBlocks, bool showBorder, bool showHullScan, bool showGrid, bool showDebug, bool showPerfStats, bool showReference, bool showCenterOfMass, bool showPanelPosition, bool showDockedMobileGrids, bool showConveyorOverlay, bool showFillBars, bool showAllConnections, bool blurScan, string fillMode, string uiPalette, int uiHue, float uiBrightness, float uiSaturation, float uiAlpha, int uiAccentHue, float uiAccentBrightness, float uiAccentSaturation, float uiPanelBrightness, float uiPanelAlpha, int schematicMainHue, int schematicSecondaryHue, int conveyorHue, float hullScanAlpha, float schematicAlpha, string storageColor, string effectorColor, bool segmentMode, bool mouseControl, string mouseSensitivity, bool allowGridRotation, bool performanceMode, bool highResScanning, int settingsExpandedMask, string activeSettingsActionId, string hoverRegionId)
         {
             var profile = UiLayout.BuildSurfaceProfile(screenWidth, screenHeight);
             var topRegions = UiLayout.BuildTopMenuRegions(screenWidth, screenHeight);
@@ -111,6 +111,12 @@ namespace GridSchematics
                             active = showGrid;
                         else if (region.Id == UiLayout.ToggleReferenceId)
                             active = showReference;
+                        else if (region.Id == UiLayout.ToggleCenterOfMassId)
+                            active = showCenterOfMass;
+                        else if (region.Id == UiLayout.TogglePanelPositionId)
+                            active = showPanelPosition;
+                        else if (region.Id == UiLayout.ToggleDockedMobileGridsId)
+                            active = showDockedMobileGrids;
                         else if (region.Id == UiLayout.ToggleAllConnectionsId)
                             active = showAllConnections;
                     }
@@ -139,6 +145,12 @@ namespace GridSchematics
                             active = showGrid;
                         else if (region.Id == UiLayout.ToggleReferenceId)
                             active = showReference;
+                        else if (region.Id == UiLayout.ToggleCenterOfMassId)
+                            active = showCenterOfMass;
+                        else if (region.Id == UiLayout.TogglePanelPositionId)
+                            active = showPanelPosition;
+                        else if (region.Id == UiLayout.ToggleDockedMobileGridsId)
+                            active = showDockedMobileGrids;
                         else if (region.Id == UiLayout.ToggleMouseControlId)
                             active = mouseControl;
                     }
@@ -171,6 +183,12 @@ namespace GridSchematics
                             active = showGrid;
                         else if (region.Id == UiLayout.ToggleReferenceId)
                             active = showReference;
+                        else if (region.Id == UiLayout.ToggleCenterOfMassId)
+                            active = showCenterOfMass;
+                        else if (region.Id == UiLayout.TogglePanelPositionId)
+                            active = showPanelPosition;
+                        else if (region.Id == UiLayout.ToggleDockedMobileGridsId)
+                            active = showDockedMobileGrids;
                     }
 
                 string label = region.Id == UiLayout.ViewTopId ? "TOP" :
@@ -188,6 +206,9 @@ namespace GridSchematics
                         region.Id == UiLayout.CycleScanModeId ? "SCAN " + GridSchematicsConfig.GetFillModeLabelStatic(fillMode) :
                         region.Id == UiLayout.CycleScanColorScaleId ? "COLOR " + GridSchematicsConfig.GetHullScanColorScaleLabelStatic(CurrentHullScanColorScale) :
                         region.Id == UiLayout.ToggleFillBarsId ? "FILL BARS" :
+                        region.Id == UiLayout.ToggleCenterOfMassId ? "CENTER OF MASS" :
+                        region.Id == UiLayout.TogglePanelPositionId ? "PANEL POSITION" :
+                        region.Id == UiLayout.ToggleDockedMobileGridsId ? "DOCKED SHIPS" :
                         region.Id == UiLayout.ToggleBlocksId ? "SHOW ALL BLOCKS" :
                         region.Id == UiLayout.ToggleAllConnectionsId ? "SHOW ALL CONNECTIONS" :
                         region.Id == UiLayout.ToggleBlocksOccludeConveyorsId ? "BLOCKS OCCLUDE CONVEYORS " + (CurrentBlocksOccludeConveyors ? "ON" : "OFF") :
@@ -295,6 +316,12 @@ namespace GridSchematics
                 DrawUtilityIconButton(frame, region, UtilityIcon.Grid, active, hover, drawLeftBorder, drawRightBorder);
             else if (region.Id == UiLayout.ToggleReferenceId)
                 DrawUtilityIconButton(frame, region, UtilityIcon.Reference, active, hover, drawLeftBorder, drawRightBorder);
+            else if (region.Id == UiLayout.ToggleCenterOfMassId)
+                DrawUtilityIconButton(frame, region, UtilityIcon.CenterOfMass, active, hover, drawLeftBorder, drawRightBorder);
+            else if (region.Id == UiLayout.TogglePanelPositionId)
+                DrawUtilityIconButton(frame, region, UtilityIcon.PanelPosition, active, hover, drawLeftBorder, drawRightBorder);
+            else if (region.Id == UiLayout.ToggleDockedMobileGridsId)
+                DrawUtilityIconButton(frame, region, UtilityIcon.DockedMobileGrids, active, hover, drawLeftBorder, drawRightBorder);
             else
                 DrawViewButton(frame, region, string.Empty, active, hover);
         }
@@ -330,9 +357,9 @@ namespace GridSchematics
             AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(barX + barW * ratio, center.Y + 2f * scale), new Vector2(Math.Max(2f, 4f * scale), Math.Max(5f, 9f * scale)), UiSelected));
         }
 
-        static partial void DrawBottomSchematicButtons(MySpriteDrawFrame frame, int screenWidth, int screenHeight, OverlayMode activeOverlay, bool showConveyorOverlay, bool showInfoPanel, InfoPanelMode infoPanelMode, MenuPanel activeMenu, string fillMode, string hoverRegionId)
+        static partial void DrawBottomSchematicButtons(MySpriteDrawFrame frame, int screenWidth, int screenHeight, OverlayMode activeOverlay, bool showConveyorOverlay, bool showInfoPanel, InfoPanelMode infoPanelMode, MenuPanel activeMenu, string fillMode, string hoverRegionId, bool includeThrust)
         {
-            var regions = UiLayout.BuildBottomSchematicRegions(screenWidth, screenHeight);
+            var regions = UiLayout.BuildBottomSchematicRegions(screenWidth, screenHeight, includeThrust);
             var infoRegions = UiLayout.BuildBottomInfoRegions(screenWidth, screenHeight);
             DrawBottomPanelBar(frame, screenWidth, screenHeight);
             DrawBottomPanelFillerButtons(frame, screenWidth, screenHeight, regions, infoRegions);
@@ -354,7 +381,7 @@ namespace GridSchematics
                     active = activeOverlay == OverlayMode.Oxygen;
 
                 string label = region.Id == UiLayout.SchematicCargoId ? "CARGO" :
-                    region.Id == UiLayout.SchematicEnginesId ? (UiLayout.BuildSurfaceProfile(screenWidth, screenHeight).UsesCompactScaling ? "ENG" : "ENGINES") :
+                    region.Id == UiLayout.SchematicEnginesId ? (UiLayout.BuildSurfaceProfile(screenWidth, screenHeight).UsesCompactScaling ? "THR" : "THRUST") :
                     region.Id == UiLayout.SchematicPowerId ? "POWER" :
                     region.Id == UiLayout.SchematicOxygenId ? (UiLayout.BuildSurfaceProfile(screenWidth, screenHeight).UsesCompactScaling ? "O2" : "OXYGEN") : region.Hint;
                 DrawViewButton(frame, region, label, active, hover);
@@ -625,7 +652,10 @@ namespace GridSchematics
             ScanMode,
             ColorScale,
             Grid,
-            Reference
+            Reference,
+            CenterOfMass,
+            PanelPosition,
+            DockedMobileGrids
         }
 
         static void DrawUtilityIconButton(MySpriteDrawFrame frame, HitRegion region, UtilityIcon icon, bool active, bool hover)
@@ -667,6 +697,12 @@ namespace GridSchematics
                 DrawColorScaleGlyph(frame, center, scale);
             else if (icon == UtilityIcon.Grid)
                 DrawGridGlyph(frame, center, iconColor, scale);
+            else if (icon == UtilityIcon.CenterOfMass)
+                DrawCenterOfMassGlyph(frame, center, iconColor, scale);
+            else if (icon == UtilityIcon.PanelPosition)
+                DrawPanelPositionGlyph(frame, center, iconColor, scale);
+            else if (icon == UtilityIcon.DockedMobileGrids)
+                DrawDockedMobileGridsGlyph(frame, center, iconColor, scale);
             else
                 DrawReferenceGlyph(frame, center, iconColor, scale);
         }
@@ -978,6 +1014,42 @@ namespace GridSchematics
             DrawScreenLine(frame, center + new Vector2(-half, offset), center + new Vector2(half, offset), line, color);
         }
 
+        static void DrawCenterOfMassGlyph(MySpriteDrawFrame frame, Vector2 center, Color color, float scale)
+        {
+            float arm = 6f * scale;
+            float half = 3.4f * scale;
+            float line = Math.Max(1f, 1.1f * scale);
+            DrawScreenLine(frame, center + new Vector2(0f, -arm), center + new Vector2(0f, -half), line, color);
+            DrawScreenLine(frame, center + new Vector2(0f, half), center + new Vector2(0f, arm), line, color);
+            DrawScreenLine(frame, center + new Vector2(-arm, 0f), center + new Vector2(-half, 0f), line, color);
+            DrawScreenLine(frame, center + new Vector2(half, 0f), center + new Vector2(arm, 0f), line, color);
+            DrawScreenLine(frame, center + new Vector2(-half, -half), center + new Vector2(half, -half), line, color);
+            DrawScreenLine(frame, center + new Vector2(half, -half), center + new Vector2(half, half), line, color);
+            DrawScreenLine(frame, center + new Vector2(half, half), center + new Vector2(-half, half), line, color);
+            DrawScreenLine(frame, center + new Vector2(-half, half), center + new Vector2(-half, -half), line, color);
+        }
+
+        static void DrawPanelPositionGlyph(MySpriteDrawFrame frame, Vector2 center, Color color, float scale)
+        {
+            float half = 5.5f * scale;
+            float line = Math.Max(1f, 1.15f * scale);
+            DrawScreenLine(frame, center + new Vector2(-half, -half), center + new Vector2(half, -half), line, color);
+            DrawScreenLine(frame, center + new Vector2(half, -half), center + new Vector2(half, half), line, color);
+            DrawScreenLine(frame, center + new Vector2(half, half), center + new Vector2(-half, half), line, color);
+            DrawScreenLine(frame, center + new Vector2(-half, half), center + new Vector2(-half, -half), line, color);
+            AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", center, new Vector2(3.2f * scale, 3.2f * scale), color));
+        }
+        static void DrawDockedMobileGridsGlyph(MySpriteDrawFrame frame, Vector2 center, Color color, float scale)
+        {
+            float line = Math.Max(1f, 1.1f * scale);
+            float small = 4.1f * scale;
+            float large = 6.2f * scale;
+            Vector2 a = center + new Vector2(-3.8f * scale, -2.2f * scale);
+            Vector2 b = center + new Vector2(3.5f * scale, 2.6f * scale);
+            DrawScreenRectBorder(frame, a, new Vector2(large, small), color);
+            DrawScreenRectBorder(frame, b, new Vector2(small, large), color);
+            DrawScreenLine(frame, a + new Vector2(large * 0.5f, 0f), b + new Vector2(-small * 0.5f, 0f), line, color);
+        }
         static void DrawReferenceGlyph(MySpriteDrawFrame frame, Vector2 center, Color color, float scale)
         {
             float arm = 6f * scale;

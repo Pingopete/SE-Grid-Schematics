@@ -84,6 +84,14 @@ namespace GridSchematics
                 return sprite.Position.Value.Y >= top;
             }
 
+            if (LayoutSnapshotScope == "editor")
+            {
+                float chromeBottom = LayoutSnapshotSurfaceSize.Y * 0.045f;
+                float drawerTop = LayoutSnapshotSurfaceSize.Y * 0.585f;
+                float y = sprite.Position.Value.Y;
+                return y <= chromeBottom || y >= drawerTop;
+            }
+
             return true;
         }
 
@@ -134,7 +142,9 @@ namespace GridSchematics
             sb.AppendLine("// Scope: " + LayoutSnapshotScope);
             sb.AppendLine("// Surface: " + FormatSnapshotVector(LayoutSnapshotSurfaceSize) + " | Texture: " + FormatSnapshotVector(LayoutSnapshotTextureSize));
             sb.AppendLine("// Sprites: " + LayoutSnapshotSprites.Count.ToString(CultureInfo.InvariantCulture));
+            sb.AppendLine("// FontIds: " + BuildSnapshotFontIdList());
             sb.AppendLine("// Paste this into SE Sprite LCD Layout Tool via Edit -> Paste Layout Code.");
+            sb.AppendLine("// If full snapshots overflow the tool, capture /GSLCDSNAP editor or /GSLCDSNAP drawer.");
             sb.AppendLine();
             sb.AppendLine("using Sandbox.ModAPI;");
             sb.AppendLine("using VRage.Game.GUI.TextPanel;");
@@ -155,6 +165,43 @@ namespace GridSchematics
             return sb.ToString();
         }
 
+
+        static string BuildSnapshotFontIdList()
+        {
+            var fontIds = new List<string>();
+            for (int i = 0; i < LayoutSnapshotSprites.Count; i++)
+            {
+                string fontId = LayoutSnapshotSprites[i].FontId;
+                if (string.IsNullOrWhiteSpace(fontId))
+                    continue;
+
+                bool exists = false;
+                for (int j = 0; j < fontIds.Count; j++)
+                {
+                    if (string.Equals(fontIds[j], fontId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+
+                if (!exists)
+                    fontIds.Add(fontId);
+            }
+
+            if (fontIds.Count == 0)
+                return "(none)";
+
+            fontIds.Sort(StringComparer.OrdinalIgnoreCase);
+            var sb = new StringBuilder();
+            for (int i = 0; i < fontIds.Count; i++)
+            {
+                if (i > 0)
+                    sb.Append(", ");
+                sb.Append(fontIds[i]);
+            }
+            return sb.ToString();
+        }
         static void AppendSnapshotSprite(StringBuilder sb, MySprite sprite, int index)
         {
             sb.AppendLine("        // [" + index.ToString(CultureInfo.InvariantCulture) + "] " + EscapeSnapshotString(sprite.Data));
@@ -164,8 +211,11 @@ namespace GridSchematics
             sb.AppendLine("            Data           = \"" + EscapeSnapshotString(sprite.Data) + "\",");
             if (sprite.Position.HasValue)
                 sb.AppendLine("            Position       = new Vector2(" + FormatSnapshotFloat(sprite.Position.Value.X) + "f, " + FormatSnapshotFloat(sprite.Position.Value.Y) + "f),");
-            if (sprite.Size.HasValue)
-                sb.AppendLine("            Size           = new Vector2(" + FormatSnapshotFloat(sprite.Size.Value.X) + "f, " + FormatSnapshotFloat(sprite.Size.Value.Y) + "f),");
+            Vector2? size = sprite.Size;
+            if (!size.HasValue && sprite.Type == SpriteType.TEXT)
+                size = EstimateSnapshotTextSize(sprite);
+            if (size.HasValue)
+                sb.AppendLine("            Size           = new Vector2(" + FormatSnapshotFloat(size.Value.X) + "f, " + FormatSnapshotFloat(size.Value.Y) + "f),");
             if (sprite.Color.HasValue)
             {
                 var color = sprite.Color.Value;
@@ -179,6 +229,24 @@ namespace GridSchematics
             sb.AppendLine();
         }
 
+
+        static Vector2 EstimateSnapshotTextSize(MySprite sprite)
+        {
+            string text = sprite.Data ?? string.Empty;
+            float scale = sprite.RotationOrScale;
+            if (scale <= 0f)
+                scale = 1f;
+
+            string[] lines = text.Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None);
+            float width = 1f;
+            for (int i = 0; i < lines.Length; i++)
+                width = Math.Max(width, EstimateUiTextWidth(lines[i], scale, sprite.FontId));
+
+            float lineHeight = 28f * scale;
+            float height = Math.Max(1f, lineHeight * Math.Max(1, lines.Length));
+            float padding = Math.Max(1f, 2f * scale);
+            return new Vector2(width + padding * 2f, height + padding * 2f);
+        }
         static string FormatSnapshotVector(Vector2 value)
         {
             return FormatSnapshotFloat(value.X) + "x" + FormatSnapshotFloat(value.Y);
@@ -238,7 +306,12 @@ namespace GridSchematics
             scope = scope.Trim().ToLowerInvariant();
             if (scope == "drawer" || scope == "info" || scope == "panel")
                 return "drawer";
+            if (scope == "editor" || scope == "ui" || scope == "chrome")
+                return "editor";
             return "full";
         }
     }
 }
+
+
+

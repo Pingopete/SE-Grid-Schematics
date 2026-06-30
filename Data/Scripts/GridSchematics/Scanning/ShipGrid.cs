@@ -92,12 +92,13 @@ namespace GridSchematics
             var basisMatrix = shipGrid.ReferenceMatrix;
             float basisGridSize = shipGrid.BasisGridSizeMeters;
 
+            var blocks = new List<IMySlimBlock>(); // QW3: hoisted out of the per-grid loop; Clear()+reuse instead of one alloc per grid per projection build
             foreach (var grid in grids)
             {
                 if (grid == null || grid.MarkedForClose)
                     continue;
 
-                var blocks = new List<IMySlimBlock>();
+                blocks.Clear();
                 grid.GetBlocks(blocks);
                 foreach (var block in blocks)
                 {

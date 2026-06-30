@@ -18,6 +18,7 @@ namespace GridSchematics
         const int MenuCloseGraceTicks = 120;
         const int StartupScanWarmupTicks = 120;
         const int StartupScanRetryTicks = 300;
+        const int StartupScanLoadGiveUpTicks = StartupScanWarmupTicks + StartupScanRetryTicks * 6;
         const int PanelRenderIntervalTicks = 6;
         const int SegmentTouchRenderIntervalTicks = 6;
         const int TopologyUpdateIntervalTicks = 12;
@@ -27,6 +28,7 @@ namespace GridSchematics
         const int LowLevelCalibrationCountdownTicks = 300;
         const int CursorCalibrationConfirmTicks = 300;
         const int CursorCalibrationClickCooldownTicks = 15;
+        const int DuplicateMenuPressSuppressTicks = 18;
         const int MinimumLowLevelPanelResolutionAxis = 256;
         const int IncrementalScanSamplesPerTick = 1152;
         const int IncrementalCompositionSamplesPerTick = 8192;
@@ -146,6 +148,12 @@ namespace GridSchematics
         int _lastTopologyUpdateTick = -600;
         int _lastRenderTick = -600;
         int _lastSharedCursorPublishTick = -600;
+        int _lastConveyorRefreshTick = -3000;            // QW6
+        int _lastConstructRediscoverTick = -60;          // QW8
+        int _lastCalibrationCatalogAttemptTick = -1000;  // QW9
+        const int ConveyorRefreshIntervalTicks = 3000;   // QW6: ~50s conveyor (GetObjectBuilder) rebuild cadence, decoupled from the 600-tick projection force
+        const int ConstructRediscoverIntervalTicks = 60; // QW8: ~1s construct-membership re-discovery cadence (was an O(world) GetEntities sweep every ~12 ticks)
+        const int CalibrationCatalogRetryTicks = 300;     // QW9: ~5s uncalibrated-panel catalog retry cadence (was every tick)
         bool _renderDirty = true;
         bool _touchRenderPending;
         bool _touchCursorRenderPending;
@@ -154,6 +162,8 @@ namespace GridSchematics
         bool _lastTouchPressed;
         Vector2 _lastCursorPosition;
         string _lastHoverRegionId = string.Empty;
+        string _lastHandledMenuRegionId = string.Empty;
+        int _lastHandledMenuPressTick = -DuplicateMenuPressSuppressTicks;
         string _suppressCargoReleaseRegionId = string.Empty;
         string _lastTouchStatus = string.Empty;
         int _menuLeaveTick = -1;
@@ -212,6 +222,10 @@ namespace GridSchematics
             Surface = surface ?? ownerBlock as IMyTextSurface;
             Session = session;
             _panelEntityId = ownerBlock != null ? ownerBlock.EntityId : 0L;
+            // QW10: stagger per-panel forced-refresh phases by a stable per-panel offset so N panels on
+            // one construct don't align their heavy refreshes onto the same tick.
+            _lastProjectionRefreshTick = -600 + (int)((ulong)_panelEntityId % 600u);
+            _lastConveyorRefreshTick = -3000 + (int)((ulong)_panelEntityId % 3000u);
             Config = new GridSchematicsConfig();
             Ui = new UiState();
             TouchInput = new TouchScreenApiAdapter();
@@ -307,9 +321,20 @@ namespace GridSchematics
             if (tick < StartupScanWarmupTicks || tick - _lastStartupScanAttemptTick < StartupScanRetryTicks)
                 return false;
 
-            bool loaded = Session != null && Session.TryLoadPersistedScan(ConstructCache, grid);
+            PersistedScanLoadStatus loadStatus = Session != null ? Session.LoadPersistedScan(ConstructCache, grid) : PersistedScanLoadStatus.Missing;
+            bool loaded = loadStatus == PersistedScanLoadStatus.Loaded;
             if (!loaded)
-                ConstructCache.MarkStartupScanCompleted();
+            {
+                if (loadStatus == PersistedScanLoadStatus.Missing)
+                {
+                    ConstructCache.MarkStartupScanCompleted();
+                }
+                else if (loadStatus == PersistedScanLoadStatus.Obsolete || tick >= StartupScanLoadGiveUpTicks)
+                {
+                    StartIncrementalRaycastScan(grid, GetConfiguredRaycastScanResolution(), true, tick);
+                    return true;
+                }
+            }
 
             _lastStartupScanAttemptTick = tick;
             _renderDirty = true;
@@ -391,6 +416,9 @@ namespace GridSchematics
             Ui.ShowDebugGrid = Config.ShowGrid;
             Ui.GridVisibilityLevel = Config.ShowGrid ? 1 : 0;
             Ui.ShowReferenceLines = Config.ShowReference;
+            Ui.ShowCenterOfMassMarker = Config.ShowCenterOfMass;
+            Ui.ShowPanelPositionMarker = Config.ShowPanelPosition;
+            Ui.ShowDockedMobileGrids = Config.ShowDockedMobileGrids;
             Ui.ShowHullScan = Config.ShowHullScan;
             Ui.HullScanBrightness = Config.ShowHullScan ? 1f : 0f;
             Ui.ShowAllConnections = Config.ShowAllConnections;
@@ -441,6 +469,9 @@ namespace GridSchematics
             Config.ShowBorder = Ui.ShowShipBorder;
             Config.ShowGrid = Ui.ShowDebugGrid;
             Config.ShowReference = Ui.ShowReferenceLines;
+            Config.ShowCenterOfMass = Ui.ShowCenterOfMassMarker;
+            Config.ShowPanelPosition = Ui.ShowPanelPositionMarker;
+            Config.ShowDockedMobileGrids = Ui.ShowDockedMobileGrids;
             Config.ShowHullScan = Ui.ShowHullScan;
             Config.ShowAllConnections = Ui.ShowAllConnections;
             Config.ShowConveyor = Ui.ShowConveyorOverlay;
@@ -642,6 +673,20 @@ namespace GridSchematics
             return false;
         }
 
+        public bool IsThrustOverlayAvailable()
+        {
+            var grid = OwnerBlock != null ? OwnerBlock.CubeGrid : null;
+            if (grid == null || grid.MarkedForClose)
+                return false;
+            try
+            {
+                return !grid.IsStatic;
+            }
+            catch
+            {
+                return true;
+            }
+        }
         OverlayMode ParseOverlayMode(string value)
         {
             if (string.IsNullOrEmpty(value))
@@ -985,8 +1030,15 @@ namespace GridSchematics
             bool metricsCompatible = IsLowLevelPanelMetricsCompatible;
             if (TouchInput != null && !TouchInput.HasStoredPanelCursorSurface && Session != null && !_lowLevelCalibrationManualOverride)
             {
-                if (Session.TryApplyStoredPanelCursorCalibration(TouchInput))
-                    changed = true;
+                // QW9: an uncalibrated panel otherwise re-reads and re-splits the entire calibration
+                // catalog every tick forever. Throttle the retry to ~5s; explicit authoring paths still
+                // apply immediately via their own TryApplyStoredPanelCursorCalibration calls.
+                if (tick - _lastCalibrationCatalogAttemptTick >= CalibrationCatalogRetryTicks)
+                {
+                    _lastCalibrationCatalogAttemptTick = tick;
+                    if (Session.TryApplyStoredPanelCursorCalibration(TouchInput))
+                        changed = true;
+                }
             }
 
             if (!metricsCompatible)
@@ -1183,6 +1235,7 @@ namespace GridSchematics
                 _pendingClearSelectedOverlay = false;
                 _selectedOverlayPanMoved = false;
                 _suppressCargoReleaseRegionId = TouchInput.HoverRegionId;
+                TouchInput.ConsumeCurrentPrimaryPress();
                 Ui.HitRegions.Clear();
                 Ui.HitRegions.Add(new HitRegion(0, 0, 1, 1, TouchInput.HoverRegionId, "Touched region"));
                 PlayMenuPressSound();
@@ -1332,6 +1385,23 @@ namespace GridSchematics
             CaptureTouchVisualState();
         }
 
+
+        bool ShouldSuppressDuplicateMenuPress(string regionId)
+        {
+            if (string.IsNullOrEmpty(regionId))
+                return false;
+
+            if (string.Equals(_lastHandledMenuRegionId, regionId, StringComparison.Ordinal) &&
+                _currentTick - _lastHandledMenuPressTick >= 0 &&
+                _currentTick - _lastHandledMenuPressTick <= DuplicateMenuPressSuppressTicks)
+            {
+                return true;
+            }
+
+            _lastHandledMenuRegionId = regionId;
+            _lastHandledMenuPressTick = _currentTick;
+            return false;
+        }
         void UpdateMouseControlInputState()
         {
             if (TouchInput == null)
@@ -1357,6 +1427,9 @@ namespace GridSchematics
 
         void HandleMenuPress(string regionId)
         {
+            if (ShouldSuppressDuplicateMenuPress(regionId))
+                return;
+
             if (HandleCargoInfoPress(regionId))
                 return;
             if (HandleInfoPanelBlockTabPress(regionId))
@@ -1518,6 +1591,18 @@ namespace GridSchematics
                     break;
                 case UiLayout.ToggleReferenceId:
                     Ui.ShowReferenceLines = !Ui.ShowReferenceLines;
+                    PersistPanelSettings();
+                    break;
+                case UiLayout.ToggleCenterOfMassId:
+                    Ui.ShowCenterOfMassMarker = !Ui.ShowCenterOfMassMarker;
+                    PersistPanelSettings();
+                    break;
+                case UiLayout.TogglePanelPositionId:
+                    Ui.ShowPanelPositionMarker = !Ui.ShowPanelPositionMarker;
+                    PersistPanelSettings();
+                    break;
+                case UiLayout.ToggleDockedMobileGridsId:
+                    Ui.ShowDockedMobileGrids = !Ui.ShowDockedMobileGrids;
                     PersistPanelSettings();
                     break;
                 case UiLayout.ToggleAllConnectionsId:
@@ -1764,6 +1849,12 @@ namespace GridSchematics
                     PersistPanelSettings();
                     break;
                 case UiLayout.SchematicEnginesId:
+                    if (!IsThrustOverlayAvailable())
+                    {
+                        Ui.ActiveOverlay = OverlayMode.None;
+                        PersistPanelSettings();
+                        break;
+                    }
                     Ui.ActiveOverlay = Ui.ActiveOverlay == OverlayMode.Engines ? OverlayMode.None : OverlayMode.Engines;
                     PersistPanelSettings();
                     break;
@@ -1810,7 +1901,8 @@ namespace GridSchematics
                 string.Equals(regionId, UiLayout.CargoInfoTransferDestViewId, StringComparison.Ordinal) ||
                 string.Equals(regionId, UiLayout.CargoInfoTransferDirectionId, StringComparison.Ordinal) ||
                 string.Equals(regionId, UiLayout.CargoInfoTransferClearId, StringComparison.Ordinal) ||
-                string.Equals(regionId, UiLayout.CargoInfoTransferNowId, StringComparison.Ordinal))
+                string.Equals(regionId, UiLayout.CargoInfoTransferNowId, StringComparison.Ordinal) ||
+                string.Equals(regionId, UiLayout.CargoInfoBlockScrollId, StringComparison.Ordinal))
                 return true;
 
             return regionId.StartsWith(UiLayout.CargoInfoMixSortPrefix, StringComparison.Ordinal) ||
@@ -1874,11 +1966,7 @@ namespace GridSchematics
 
             if (string.Equals(regionId, UiLayout.CargoInfoTransferDirectionId, StringComparison.Ordinal))
             {
-                Ui.CargoTransferDirectionReversed = !Ui.CargoTransferDirectionReversed;
-                Ui.CargoTransferQuotaItems.Clear();
-                Ui.CargoMixSelectedItemKeys.Clear();
-                Ui.CargoTransferQuotaScrollIndex = 0;
-                SetCargoTransferMixView(GetCargoTransferActiveSourceTarget());
+                Ui.CargoTransferDirectionReversed = false;
                 _renderDirty = true;
                 return true;
             }
@@ -1918,10 +2006,8 @@ namespace GridSchematics
                 int row;
                 if (!int.TryParse(regionId.Substring(UiLayout.CargoInfoMixRowPrefix.Length), out row))
                     return true;
-                if (IsShiftHeld())
-                    AddCargoMixRowToTransferQuota(row);
-                else
-                    ToggleCargoMixRowSelection(row);
+                ToggleCargoMixRowSelection(row);
+                TryAddSelectedCargoMixRowToTransferQuota(row);
                 _renderDirty = true;
                 return true;
             }
@@ -1950,6 +2036,15 @@ namespace GridSchematics
             if (string.Equals(regionId, UiLayout.CargoInfoFocusOfflineId, StringComparison.Ordinal))
                 return SetCargoInfoFocus("OFFLINE", Ui.CargoInfoFilter);
 
+            if (string.Equals(regionId, UiLayout.CargoInfoBlockScrollId, StringComparison.Ordinal))
+            {
+                bool selectedBlock = SelectCargoInfoBlockBar(Ui.CargoBlockCursorIndex);
+                if (selectedBlock)
+                    Ui.CargoBlockCursorActiveUntilTick = _currentTick + 300;
+                if (selectedBlock && !string.IsNullOrEmpty(Ui.CargoTransferCaptureTarget))
+                    CaptureSelectedBlockStackForTransferTarget(Ui.CargoTransferCaptureTarget);
+                return selectedBlock;
+            }
             if (regionId.StartsWith(UiLayout.CargoInfoBlockPrefix, StringComparison.Ordinal))
             {
                 int lane;
@@ -2029,31 +2124,69 @@ namespace GridSchematics
             if (index < 0 || index >= summary.Blocks.Count)
                 return true;
 
-            var cargoBlock = summary.Blocks[index];
-            var block = cargoBlock != null ? cargoBlock.Block : null;
-            if (block == null)
+            var item = BuildCargoBlockStackItem(summary.Blocks[index]);
+            if (item == null || item.Block == null)
                 return true;
 
-            Ui.SelectedBlockStackItems.Clear();
-            Ui.SelectedBlockStackItems.Add(new BlockStackItem
+            if (IsControlHeld())
             {
-                Id = "cargo:block:" + block.EntityId.ToString(),
-                Name = ReadableBlockName(block),
-                Block = block,
-                Projected = new Vector2I(0, 0),
-                Depth = 0
-            });
-            Ui.SelectedBlockStackSignature = "cargo:block:" + block.EntityId.ToString();
+                bool removed = false;
+                removed = RemoveManualBlockSelectionItemFromGroup(item, 1, false) || removed;
+                removed = RemoveManualBlockSelectionItemFromGroup(item, 2, false) || removed;
+                if (removed)
+                {
+                    if (GetManualBlockGroupCount() > 0)
+                        ActivateManualBlockGroup(GetActiveManualGroupIndex());
+                    else
+                        ClearSelectedBlockStack();
+                }
+                DeactivateCargoTransferSelectionFocus();
+                _renderDirty = true;
+                _hasLastMouseWheelValue = false;
+                return true;
+            }
+
+            if (IsShiftHeld())
+            {
+                int groupIndex = HasManualBlockSelection() ? GetActiveManualGroupIndex() : 1;
+                SeedManualSelectionFromCurrentStack(groupIndex);
+                AddManualBlockSelectionItem(item, groupIndex);
+                ActivateManualBlockGroup(groupIndex);
+                DeactivateCargoTransferSelectionFocus();
+                _renderDirty = true;
+                _hasLastMouseWheelValue = false;
+                return true;
+            }
+
+            Ui.SelectedBlockStackItems.Clear();
+            Ui.SelectedBlockStackItems.Add(item);
+            Ui.SelectedBlockStackSignature = item.Id;
             Ui.SelectedBlockStackIndex = 0;
             Ui.SelectedBlockStackScrollIndex = 0;
             Ui.SelectedOverlayLineIndex = 0;
-            Ui.SelectedOverlayBlockId = FindOverlayRegionIdForBlock(block);
+            Ui.SelectedOverlayBlockId = FindOverlayRegionIdForBlock(item.Block);
             Ui.ShowInfoPanel = SupportsInfoPanel;
             Ui.InfoPanelMode = InfoPanelMode.Systems;
             Ui.ActiveMenu = MenuPanel.None;
             _renderDirty = true;
             _hasLastMouseWheelValue = false;
             return true;
+        }
+
+        BlockStackItem BuildCargoBlockStackItem(RenderEngine.CargoPanelBlock cargoBlock)
+        {
+            var block = cargoBlock != null ? cargoBlock.Block : null;
+            if (block == null)
+                return null;
+
+            return new BlockStackItem
+            {
+                Id = "cargo:block:" + block.EntityId.ToString(),
+                Name = ReadableBlockName(block),
+                Block = block,
+                Projected = new Vector2I(0, 0),
+                Depth = 0
+            };
         }
 
         void SyncCargoBlockCursorToSelectedSingleBlock()
@@ -2211,7 +2344,7 @@ namespace GridSchematics
 
         string GetCargoTransferActiveSourceTarget()
         {
-            return Ui != null && Ui.CargoTransferDirectionReversed ? "DEST" : "SOURCE";
+            return "SOURCE";
         }
         string ResolveCargoTransferCaptureTarget()
         {
@@ -2551,8 +2684,9 @@ namespace GridSchematics
         {
             if (Ui == null)
                 return;
-            if (!string.Equals(Ui.CargoTransferMixViewTarget ?? "SOURCE", GetCargoTransferActiveSourceTarget(), StringComparison.Ordinal))
+            if (!CanAddCargoMixItemsToTransferQuota())
                 return;
+            EnsureCargoTransferSourceFromCurrentSelection();
             var rows = BuildCurrentCargoMixRows();
             int index = Ui.CargoMixScrollIndex + row;
             if (index < 0 || index >= rows.Count)
@@ -2561,12 +2695,66 @@ namespace GridSchematics
             Ui.CargoRightPanelMode = "TRANSFER";
             ActivateCargoTransferSelectionFocus(GetCargoTransferActiveSourceTarget());
         }
+
+        void TryAddSelectedCargoMixRowToTransferQuota(int row)
+        {
+            if (Ui == null || !CanAddCargoMixItemsToTransferQuota())
+                return;
+            EnsureCargoTransferSourceFromCurrentSelection();
+            var rows = BuildCurrentCargoMixRows();
+            int index = Ui.CargoMixScrollIndex + row;
+            if (index < 0 || index >= rows.Count)
+                return;
+            string key = CargoPanelItemKey(rows[index]);
+            if (string.IsNullOrEmpty(key) || Ui.CargoMixSelectedItemKeys.IndexOf(key) < 0)
+                return;
+            AddOrUpdateTransferQuotaItem(rows[index]);
+            Ui.CargoRightPanelMode = "TRANSFER";
+            ActivateCargoTransferSelectionFocus(GetCargoTransferActiveSourceTarget());
+        }
+
+        void EnsureCargoTransferSourceFromCurrentSelection()
+        {
+            if (Ui == null || (Ui.CargoTransferSourceItems != null && Ui.CargoTransferSourceItems.Count > 0))
+                return;
+            var destination = Ui.CargoTransferSourceItems;
+            destination.Clear();
+            if (Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAllIndex)
+            {
+                AddAllCargoBlocksToTransferSelection(destination);
+            }
+            else if (Ui.SelectedBlockStackItems != null && Ui.SelectedBlockStackItems.Count > 0)
+            {
+                if (Ui.SelectedBlockStackIndex == UiState.SelectedBlockStackAggregateIndex)
+                {
+                    for (int i = 0; i < Ui.SelectedBlockStackItems.Count; i++)
+                        AddTransferSelectionItem(destination, Ui.SelectedBlockStackItems[i]);
+                }
+                else if (Ui.SelectedBlockStackIndex >= 0 && Ui.SelectedBlockStackIndex < Ui.SelectedBlockStackItems.Count)
+                {
+                    AddTransferSelectionItem(destination, Ui.SelectedBlockStackItems[Ui.SelectedBlockStackIndex]);
+                }
+            }
+            Ui.CargoTransferSourceLabel = BuildCurrentSelectionTransferLabel();
+            Ui.CargoTransferMixViewTarget = "SOURCE";
+            Ui.CargoTransferSelectionActive = destination.Count > 0 || (Ui.CargoTransferDestItems != null && Ui.CargoTransferDestItems.Count > 0);
+        }
+        bool CanAddCargoMixItemsToTransferQuota()
+        {
+            if (Ui == null)
+                return false;
+            if (!string.Equals(Ui.CargoTransferMixViewTarget ?? "SOURCE", GetCargoTransferActiveSourceTarget(), StringComparison.Ordinal))
+                return false;
+            return Ui.CargoTransferDestItems != null && Ui.CargoTransferDestItems.Count > 0;
+        }
+
         void AddCargoMixSelectionToTransferQuota()
         {
             if (Ui == null)
                 return;
-            if (!string.Equals(Ui.CargoTransferMixViewTarget ?? "SOURCE", GetCargoTransferActiveSourceTarget(), StringComparison.Ordinal))
+            if (!CanAddCargoMixItemsToTransferQuota())
                 return;
+            EnsureCargoTransferSourceFromCurrentSelection();
             var rows = BuildCurrentCargoMixRows();
             bool useSelection = Ui.CargoMixSelectedItemKeys.Count > 0;
             for (int i = 0; i < rows.Count; i++)
@@ -2597,7 +2785,6 @@ namespace GridSchematics
                 if (existing != null && string.Equals(existing.Key, key, StringComparison.Ordinal))
                 {
                     existing.MaxAmount = Math.Max(existing.MaxAmount, item.Amount > 0f ? item.Amount : item.Volume);
-                    existing.Amount = Math.Min(existing.MaxAmount, Math.Max(existing.Amount, item.Amount > 0f ? item.Amount : item.Volume));
                     existing.Volume = Math.Max(existing.Volume, item.Volume);
                     return;
                 }
@@ -2609,7 +2796,7 @@ namespace GridSchematics
                 Category = item.Category,
                 TypeId = item.TypeId,
                 SubtypeId = item.SubtypeId,
-                Amount = item.Amount > 0f ? item.Amount : item.Volume,
+                Amount = 0f,
                 Volume = item.Volume,
                 MaxAmount = item.Amount > 0f ? item.Amount : item.Volume
             });
@@ -2642,25 +2829,115 @@ namespace GridSchematics
                 Ui.CargoTransferQuotaItems.RemoveAt(index);
                 return;
             }
-            float step = CargoTransferQuotaStep(item != null ? item.Amount : 0f);
+            if (item == null)
+                return;
             if (string.Equals(action, "up", StringComparison.Ordinal))
-                item.Amount = Math.Min(item.MaxAmount > 0f ? item.MaxAmount : item.Amount + step, item.Amount + step);
+                item.Amount = GetCargoTransferQuotaMaxFit(item);
             else if (string.Equals(action, "down", StringComparison.Ordinal))
-                item.Amount = Math.Max(0f, item.Amount - step);
-            if (item.Amount <= 0f)
-                Ui.CargoTransferQuotaItems.RemoveAt(index);
+                item.Amount = 0f;
         }
 
+        float GetCargoTransferQuotaMaxFit(CargoTransferQuotaItem target)
+        {
+            if (Ui == null || target == null)
+                return 0f;
+            float sourceAvailable = GetCargoTransferQuotaAvailableSourceAmount(target);
+            if (sourceAvailable <= 0f)
+                sourceAvailable = target.MaxAmount > 0f ? target.MaxAmount : target.Volume;
+            float remainingFree = Math.Max(0f, GetCargoTransferSelectionFreeVolume(Ui.CargoTransferDestItems));
+            for (int i = 0; i < Ui.CargoTransferQuotaItems.Count; i++)
+            {
+                var item = Ui.CargoTransferQuotaItems[i];
+                if (item == null || object.ReferenceEquals(item, target))
+                    continue;
+                remainingFree -= Math.Max(0f, item.Amount);
+            }
+            if (remainingFree < 0f)
+                remainingFree = 0f;
+            return Math.Min(sourceAvailable, remainingFree);
+        }
+
+        float GetCargoTransferQuotaAvailableSourceAmount(CargoTransferQuotaItem quota)
+        {
+            if (quota == null)
+                return 0f;
+            var inventories = CollectTransferInventories(Ui != null ? Ui.CargoTransferSourceItems : null);
+            float total = 0f;
+            for (int i = 0; i < inventories.Count; i++)
+            {
+                var inventory = inventories[i];
+                var items = new List<VRage.Game.ModAPI.Ingame.MyInventoryItem>();
+                try { inventory.GetItems(items); } catch { continue; }
+                for (int j = 0; j < items.Count; j++)
+                {
+                    var item = items[j];
+                    if (CargoInventoryItemMatchesQuota(item, quota))
+                        total += (float)item.Amount;
+                }
+            }
+            return total;
+        }
+
+        float GetCargoTransferSelectionFreeVolume(List<BlockStackItem> items)
+        {
+            if (items == null || items.Count == 0)
+                return 0f;
+            float current = 0f;
+            float max = 0f;
+            for (int i = 0; i < items.Count; i++)
+            {
+                var block = items[i] != null ? items[i].Block : null;
+                if (block == null)
+                    continue;
+                try
+                {
+                    for (int inv = 0; inv < block.InventoryCount; inv++)
+                    {
+                        var inventory = block.GetInventory(inv);
+                        if (inventory == null)
+                            continue;
+                        current += (float)inventory.CurrentVolume;
+                        max += (float)inventory.MaxVolume;
+                    }
+                }
+                catch
+                {
+                }
+            }
+            return Math.Max(0f, max - current);
+        }
+
+        void AdjustCargoTransferQuotaByWheel(int visibleRow, int wheelDelta)
+        {
+            if (Ui == null || visibleRow < 0 || wheelDelta == 0)
+                return;
+            int index = Ui.CargoTransferQuotaScrollIndex + visibleRow;
+            if (index < 0 || index >= Ui.CargoTransferQuotaItems.Count)
+                return;
+            var item = Ui.CargoTransferQuotaItems[index];
+            if (item == null)
+                return;
+            float maxFit = GetCargoTransferQuotaMaxFit(item);
+            float step = CargoTransferQuotaStep(Math.Max(maxFit, item.MaxAmount));
+            if (IsControlHeld())
+                step *= 20f;
+            else if (IsShiftHeld())
+                step *= 5f;
+            float next = item.Amount + (wheelDelta > 0 ? step : -step);
+            if (next < 0f)
+                next = 0f;
+            item.Amount = Math.Min(next, Math.Max(0f, maxFit));
+        }
         float CargoTransferQuotaStep(float amount)
         {
             if (amount >= 100000f)
-                return Math.Max(1000f, (float)Math.Round(amount * 0.10f));
-            if (amount >= 10000f)
-                return 1000f;
-            if (amount >= 1000f)
                 return 100f;
-            if (amount >= 100f)
+            if (amount >= 10000f)
+                return 50f;
+            if (amount >= 1000f)
                 return 10f;
+            if (amount >= 100f)
+                return 2f;
             return 1f;
         }
 
@@ -2668,8 +2945,9 @@ namespace GridSchematics
         {
             if (Ui == null || Ui.CargoTransferQuotaItems.Count == 0)
                 return;
-            var fromItems = Ui.CargoTransferDirectionReversed ? Ui.CargoTransferDestItems : Ui.CargoTransferSourceItems;
-            var toItems = Ui.CargoTransferDirectionReversed ? Ui.CargoTransferSourceItems : Ui.CargoTransferDestItems;
+            Ui.CargoTransferDirectionReversed = false;
+            var fromItems = Ui.CargoTransferSourceItems;
+            var toItems = Ui.CargoTransferDestItems;
             if (fromItems == null || toItems == null || fromItems.Count == 0 || toItems.Count == 0)
                 return;
 
@@ -2701,7 +2979,11 @@ namespace GridSchematics
                         for (int d = 0; d < destinationInventories.Count && requested > 0f; d++)
                         {
                             var destination = destinationInventories[d];
-                            MyFixedPoint moveAmount = (MyFixedPoint)requested;
+                            float destinationFree = GetTransferInventoryFreeAmount(destination);
+                            if (destinationFree <= 0f)
+                                continue;
+                            float moveRequest = Math.Min(requested, destinationFree);
+                            MyFixedPoint moveAmount = (MyFixedPoint)moveRequest;
                             bool moved = false;
                             try
                             {
@@ -2713,8 +2995,8 @@ namespace GridSchematics
                             }
                             if (moved)
                             {
-                                remaining -= requested;
-                                requested = 0f;
+                                remaining -= moveRequest;
+                                requested -= moveRequest;
                             }
                         }
                     }
@@ -2732,6 +3014,19 @@ namespace GridSchematics
             Ui.CachedCargoLoadSummaryKey = string.Empty;
         }
 
+        float GetTransferInventoryFreeAmount(VRage.Game.ModAPI.Ingame.IMyInventory inventory)
+        {
+            if (inventory == null)
+                return 0f;
+            try
+            {
+                return Math.Max(0f, (float)inventory.MaxVolume - (float)inventory.CurrentVolume);
+            }
+            catch
+            {
+                return 0f;
+            }
+        }
         List<VRage.Game.ModAPI.Ingame.IMyInventory> CollectTransferInventories(List<BlockStackItem> items)
         {
             var result = new List<VRage.Game.ModAPI.Ingame.IMyInventory>();
@@ -2760,8 +3055,28 @@ namespace GridSchematics
                 return false;
             string typeId = item.Type.TypeId;
             string subtypeId = item.Type.SubtypeId;
+            if (string.Equals(quota.TypeId ?? string.Empty, "Category", StringComparison.OrdinalIgnoreCase))
+                return string.Equals(NormalizeCargoInfoSelector(CategorizeCargoItemForTransfer(typeId, subtypeId)), NormalizeCargoInfoSelector(quota.Category), StringComparison.Ordinal);
             return string.Equals(typeId, quota.TypeId ?? string.Empty, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(subtypeId, quota.SubtypeId ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+        string CategorizeCargoItemForTransfer(string typeId, string subtype)
+        {
+            string type = typeId ?? string.Empty;
+            string sub = subtype ?? string.Empty;
+            if (sub.IndexOf("Ice", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "ORE";
+            if (type.IndexOf("Ore", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "ORE";
+            if (type.IndexOf("Ingot", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "INGOT";
+            if (type.IndexOf("Component", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "COMP";
+            if (type.IndexOf("PhysicalGun", StringComparison.OrdinalIgnoreCase) >= 0 || type.IndexOf("Tool", StringComparison.OrdinalIgnoreCase) >= 0 || type.IndexOf("Weapon", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "TOOLS";
+            if (type.IndexOf("Consumable", StringComparison.OrdinalIgnoreCase) >= 0 || type.IndexOf("GasContainer", StringComparison.OrdinalIgnoreCase) >= 0 || type.IndexOf("OxygenContainer", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "CONSUMABLE";
+            return "OTHER";
         }
         bool HasManualBlockSelection()
         {
@@ -3133,6 +3448,164 @@ namespace GridSchematics
             ActivateManualBlockGroup(1);
             return true;
         }
+        public bool HasAuxiliaryStaticCargoSource()
+        {
+            return CollectAuxiliaryStaticCargoGrids().Count > 0;
+        }
+
+        public List<IMyCubeGrid> CollectAuxiliaryStaticCargoGrids()
+        {
+            var result = new List<IMyCubeGrid>();
+            var seen = new HashSet<long>();
+            IMyCubeGrid selectedAux = GetSelectedConnectorAuxiliaryStaticGrid();
+            if (selectedAux == null && Ui != null && Ui.CargoAuxiliaryGridId != 0L)
+                selectedAux = FindConnectedAuxiliaryStaticGrid(Ui.CargoAuxiliaryGridId);
+            if (selectedAux != null)
+            {
+                result.Add(selectedAux);
+                return result;
+            }
+
+            var sourceGrids = ConstructCache != null && ConstructCache.ConstructGrids != null && ConstructCache.ConstructGrids.Count > 0
+                ? ConstructCache.ConstructGrids
+                : null;
+            if (sourceGrids == null)
+            {
+                if (OwnerBlock != null && OwnerBlock.CubeGrid != null)
+                    AddAuxiliaryStaticGridsFromGrid(OwnerBlock.CubeGrid, result, seen);
+                return result;
+            }
+
+            for (int i = 0; i < sourceGrids.Count; i++)
+                AddAuxiliaryStaticGridsFromGrid(sourceGrids[i], result, seen);
+
+            return result;
+        }
+
+        IMyCubeGrid FindConnectedAuxiliaryStaticGrid(long gridId)
+        {
+            if (gridId == 0L)
+                return null;
+            var grids = new List<IMyCubeGrid>();
+            var seen = new HashSet<long>();
+            var sourceGrids = ConstructCache != null && ConstructCache.ConstructGrids != null && ConstructCache.ConstructGrids.Count > 0
+                ? ConstructCache.ConstructGrids
+                : null;
+            if (sourceGrids != null)
+            {
+                for (int i = 0; i < sourceGrids.Count; i++)
+                    AddAuxiliaryStaticGridsFromGrid(sourceGrids[i], grids, seen);
+            }
+            else if (OwnerBlock != null && OwnerBlock.CubeGrid != null)
+            {
+                AddAuxiliaryStaticGridsFromGrid(OwnerBlock.CubeGrid, grids, seen);
+            }
+
+            for (int i = 0; i < grids.Count; i++)
+            {
+                if (grids[i] != null && grids[i].EntityId == gridId)
+                    return grids[i];
+            }
+            return null;
+        }
+        IMyCubeGrid GetSelectedConnectorAuxiliaryStaticGrid()
+        {
+            if (Ui == null || Ui.SelectedBlockStackItems == null || Ui.SelectedBlockStackItems.Count == 0)
+                return null;
+
+            for (int i = 0; i < Ui.SelectedBlockStackItems.Count; i++)
+            {
+                var block = Ui.SelectedBlockStackItems[i] != null ? Ui.SelectedBlockStackItems[i].Block : null;
+                var connector = block as IMyShipConnector;
+                if (connector == null)
+                    continue;
+
+                var other = GetOtherConnector(connector);
+                var otherGrid = other != null ? other.CubeGrid : null;
+                if (IsAuxiliaryCargoGrid(otherGrid, connector.CubeGrid))
+                    return otherGrid;
+            }
+
+            return null;
+        }
+
+        void AddAuxiliaryStaticGridsFromGrid(IMyCubeGrid grid, List<IMyCubeGrid> result, HashSet<long> seen)
+        {
+            if (grid == null || grid.MarkedForClose || result == null || seen == null)
+                return;
+
+            var blocks = new List<IMySlimBlock>();
+            try
+            {
+                grid.GetBlocks(blocks, block => block != null && block.FatBlock is IMyShipConnector);
+            }
+            catch
+            {
+                return;
+            }
+
+            for (int i = 0; i < blocks.Count; i++)
+            {
+                var connector = blocks[i].FatBlock as IMyShipConnector;
+                var other = GetOtherConnector(connector);
+                var otherGrid = other != null ? other.CubeGrid : null;
+                if (!IsAuxiliaryCargoGrid(otherGrid, grid) || seen.Contains(otherGrid.EntityId))
+                    continue;
+
+                seen.Add(otherGrid.EntityId);
+                result.Add(otherGrid);
+            }
+        }
+
+        static IMyShipConnector GetOtherConnector(IMyShipConnector connector)
+        {
+            if (connector == null)
+                return null;
+            try
+            {
+                return connector.OtherConnector;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        static bool IsAuxiliaryCargoGrid(IMyCubeGrid grid, IMyCubeGrid localConnectorGrid)
+        {
+            if (grid == null || grid.MarkedForClose)
+                return false;
+            if (localConnectorGrid != null && grid.EntityId == localConnectorGrid.EntityId)
+                return false;
+            return true;
+        }
+
+        void SetCargoInfoSource(string source)
+        {
+            string normalized = string.Equals(source ?? string.Empty, "AUX", StringComparison.OrdinalIgnoreCase) ? "AUX" : "LOCAL";
+            IMyCubeGrid selectedAuxGrid = normalized == "AUX" ? GetSelectedConnectorAuxiliaryStaticGrid() : null;
+            if (normalized == "AUX" && selectedAuxGrid == null && !HasAuxiliaryStaticCargoSource())
+                normalized = "LOCAL";
+            long auxGridId = selectedAuxGrid != null ? selectedAuxGrid.EntityId : normalized == "AUX" ? Ui.CargoAuxiliaryGridId : 0L;
+            if (string.Equals(Ui.CargoInfoSource ?? "LOCAL", normalized, StringComparison.Ordinal) && Ui.CargoAuxiliaryGridId == auxGridId)
+                return;
+
+            Ui.CargoInfoSource = normalized;
+            Ui.CargoAuxiliaryGridId = auxGridId;
+            Ui.CargoBlockScrollIndex = 0;
+            Ui.CargoBlockCursorIndex = 6;
+            Ui.CargoMixScrollIndex = 0;
+            Ui.CachedCargoSummaryKey = string.Empty;
+            Ui.CachedCargoSummary = null;
+            Ui.CachedCargoLoadSummaryKey = string.Empty;
+            Ui.CachedCargoLoadSummary = null;
+            ClearSelectedBlockStack();
+            Ui.SelectedOverlayBlockId = null;
+            Ui.SelectedOverlayLineIndex = 0;
+            DeactivateCargoTransferSelectionFocus();
+            _hasLastMouseWheelValue = false;
+            _renderDirty = true;
+        }
         bool HandleInfoPanelBlockTabPress(string regionId)
         {
             if (string.IsNullOrEmpty(regionId))
@@ -3141,8 +3614,15 @@ namespace GridSchematics
             int index;
             bool stackTab = false;
             int groupTabIndex = 0;
+            if (string.Equals(regionId, UiLayout.InfoPanelAuxTabId, StringComparison.Ordinal))
+            {
+                SetCargoInfoSource("AUX");
+                return true;
+            }
             if (string.Equals(regionId, UiLayout.InfoPanelAllTabId, StringComparison.Ordinal))
             {
+                if (Ui.ActiveOverlay == OverlayMode.Cargo)
+                    SetCargoInfoSource("LOCAL");
                 index = UiState.SelectedBlockStackAllIndex;
             }
             else if (string.Equals(regionId, UiLayout.InfoPanelStackTabId, StringComparison.Ordinal))
@@ -3468,6 +3948,34 @@ namespace GridSchematics
                 _isPanningRender = false;
         }
 
+        bool TryGetCargoDrawerCanonicalPoint(Vector2 cursor, out Vector2 canonical)
+        {
+            canonical = cursor;
+            if (Surface == null)
+                return cursor.X >= 0f && cursor.X <= 512f && cursor.Y >= 312f && cursor.Y <= 496f;
+
+            Vector2 size = Surface.SurfaceSize;
+            var profile = UiLayout.BuildSurfaceProfile((int)size.X, (int)size.Y);
+            if (profile.IsCanonical1024Square)
+            {
+                var zones = UiLayout.BuildZones((int)size.X, (int)size.Y);
+                var panel = UiLayout.BuildCargoInfoPanelZone(zones.Center, true);
+                if (cursor.X < panel.X || cursor.X > panel.X + panel.Width || cursor.Y < panel.Y || cursor.Y > panel.Y + panel.Height)
+                    return false;
+
+                canonical = new Vector2((cursor.X - panel.X) * 0.5f, 312f + (cursor.Y - panel.Y) * 0.5f);
+                return canonical.X >= 0f && canonical.X <= 512f && canonical.Y >= 312f && canonical.Y <= 496f;
+            }
+
+            return cursor.X >= 0f && cursor.X <= 512f && cursor.Y >= 312f && cursor.Y <= 496f;
+        }
+
+        bool IsCursorInCargoDrawer(Vector2 cursor)
+        {
+            Vector2 canonical;
+            return TryGetCargoDrawerCanonicalPoint(cursor, out canonical) && canonical.Y >= 328f && canonical.Y <= 496f;
+        }
+
         bool UpdateViewportWheel()
         {
             if (!TouchInput.IsAvailable || !TouchInput.IsCursorOnScreen || MyAPIGateway.Input == null)
@@ -3477,8 +3985,7 @@ namespace GridSchematics
             }
             if (SupportsInfoPanel && Ui.ShowInfoPanel && Ui.InfoPanelMode == InfoPanelMode.Systems && Ui.ActiveOverlay == OverlayMode.Cargo)
             {
-                var cursor = TouchInput.CursorPosition;
-                if (cursor.X >= 0f && cursor.X <= 512f && cursor.Y >= 328f && cursor.Y <= 496f)
+                if (IsCursorInCargoDrawer(TouchInput.CursorPosition))
                     return false;
             }
 
@@ -3560,8 +4067,8 @@ namespace GridSchematics
             bool hoverActions = false;
             bool hoverBlocks = false;
             bool hoverMix = false;
-            var cursor = TouchInput.CursorPosition;
-            if (cursor.Y >= 328f && cursor.Y <= 496f)
+            Vector2 cursor;
+            if (TryGetCargoDrawerCanonicalPoint(TouchInput.CursorPosition, out cursor) && cursor.Y >= 328f && cursor.Y <= 496f)
             {
                 if (cursor.X >= 0f && cursor.X < 168f)
                     hoverBlocks = true;
@@ -3610,10 +4117,23 @@ namespace GridSchematics
             if (delta == 0)
                 return false;
 
+            if (string.Equals(Ui.CargoRightPanelMode, "TRANSFER", StringComparison.OrdinalIgnoreCase) && hover.StartsWith(UiLayout.CargoInfoTransferQuotaPrefix, StringComparison.Ordinal))
+            {
+                string payload = hover.Substring(UiLayout.CargoInfoTransferQuotaPrefix.Length);
+                string[] parts = payload.Split(':');
+                int visibleRow;
+                if (parts.Length >= 2 && int.TryParse(parts[0], out visibleRow))
+                {
+                    AdjustCargoTransferQuotaByWheel(visibleRow, delta);
+                    TouchInput.MarkScrollActive();
+                    return true;
+                }
+            }
+
             if (hoverBlocks)
             {
                 int direction = delta > 0 ? -1 : 1;
-                if (!UpdateCargoBlockCursorScroll(direction))
+                if (!UpdateCargoBlockCursorScroll(direction, GetScrollLineStep()))
                     return false;
 
                 TouchInput.MarkScrollActive();
@@ -3667,7 +4187,7 @@ namespace GridSchematics
         }
 
 
-        bool UpdateCargoBlockCursorScroll(int direction)
+        bool UpdateCargoBlockCursorScroll(int direction, int steps)
         {
             var summary = Ui != null ? Ui.CachedCargoLoadSummary : null;
             int count = summary != null && summary.Blocks != null ? summary.Blocks.Count : 0;
@@ -3687,23 +4207,32 @@ namespace GridSchematics
 
             int oldFirst = first;
             int oldCursor = cursor;
-            if (direction > 0)
+            if (steps < 1)
+                steps = 1;
+            for (int step = 0; step < steps; step++)
             {
-                if (cursor < centerLane && cursor < maxCursor)
-                    cursor++;
-                else if (first < maxFirst)
-                    first++;
-                else if (cursor < maxCursor)
-                    cursor++;
-            }
-            else if (direction < 0)
-            {
-                if (cursor > centerLane)
-                    cursor--;
-                else if (first > 0)
-                    first--;
-                else if (cursor > 0)
-                    cursor--;
+                if (direction > 0)
+                {
+                    if (cursor < centerLane && cursor < maxCursor)
+                        cursor++;
+                    else if (first < maxFirst)
+                        first++;
+                    else if (cursor < maxCursor)
+                        cursor++;
+                }
+                else if (direction < 0)
+                {
+                    if (cursor > centerLane)
+                        cursor--;
+                    else if (first > 0)
+                        first--;
+                    else if (cursor > 0)
+                        cursor--;
+                }
+                else
+                {
+                    break;
+                }
             }
 
             maxCursor = Math.Min(visible - 1, count - first - 1);
@@ -4056,6 +4585,14 @@ namespace GridSchematics
             return true;
         }
 
+        int GetScrollLineStep()
+        {
+            if (IsControlHeld())
+                return 4;
+            if (IsShiftHeld())
+                return 2;
+            return 1;
+        }
         bool IsShiftHeld()
         {
             if (MyAPIGateway.Input == null)
@@ -4686,6 +5223,7 @@ namespace GridSchematics
             }
             _lastProjectionRefreshTick = -600;
             _lastTopologyUpdateTick = -600;
+            _lastConveyorRefreshTick = -3000; // QW6
             _renderDirty = true;
         }
 
@@ -4817,7 +5355,7 @@ namespace GridSchematics
             }
             else if (SupportsInfoPanel && Ui.ShowInfoPanel && Ui.InfoPanelMode == InfoPanelMode.Systems)
             {
-                var tabRegions = UiLayout.BuildInfoPanelBlockTabRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, Ui.SelectedBlockStackItems, Ui.SelectedBlockStackScrollIndex, Ui.ActiveOverlay == OverlayMode.Cargo, HasManualBlockSelection(), GetManualBlockGroupCount());
+                var tabRegions = UiLayout.BuildInfoPanelBlockTabRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, Ui.SelectedBlockStackItems, Ui.SelectedBlockStackScrollIndex, Ui.ActiveOverlay == OverlayMode.Cargo, HasManualBlockSelection(), GetManualBlockGroupCount(), Ui.ActiveOverlay == OverlayMode.Cargo && HasAuxiliaryStaticCargoSource());
                 for (int i = 0; i < tabRegions.Length; i++)
                 {
                     TouchInput.AddHitRegion(tabRegions[i]);
@@ -4836,7 +5374,7 @@ namespace GridSchematics
                     TouchInput.AddHitRegion(segmentControls[i]);
             }
 
-            var bottomRegions = UiLayout.BuildBottomSchematicRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y);
+            var bottomRegions = UiLayout.BuildBottomSchematicRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, IsThrustOverlayAvailable());
             for (int i = 0; i < bottomRegions.Length; i++)
             {
                 TouchInput.AddHitRegion(bottomRegions[i]);
@@ -4867,11 +5405,23 @@ namespace GridSchematics
                 return UpdateSegmentProjectionCache(tick, false);
 
             _lastTopologyUpdateTick = tick;
-            bool forceProjectionRefresh = forceTopologyRefresh && !HasReadyRaycastScan(view);
-            ConstructCache.UpdateConstructProjection(grid, view, forceProjectionRefresh);
-            ConstructCache.GetOrCreateConveyorNetwork(grid, forceTopologyRefresh);
+            // QW8: re-discover construct membership (the O(world) GetEntities sweep) AND rebuild the
+            // motion-invariant projection only ~1x/sec, instead of every ~12 ticks per panel. Rebuilding
+            // the projection also bumps the cache timestamp (new ShipGrid instance), so throttling it cuts
+            // render-cache thrash as well as the world sweep. A fresh/empty cache still builds immediately.
+            bool rediscoverConstruct = forceTopologyRefresh || tick - _lastConstructRediscoverTick >= ConstructRediscoverIntervalTicks;
+            if (rediscoverConstruct)
+                _lastConstructRediscoverTick = tick;
+            bool forceProjectionRefresh = rediscoverConstruct;
+            ConstructCache.UpdateConstructProjection(grid, view, forceProjectionRefresh, rediscoverConstruct);
+            // QW6: rebuild conveyor topology (grid.GetObjectBuilder per grid) on its own ~50s cadence rather
+            // than every 600 ticks, since it is the dominant periodic stutter source.
+            bool forceConveyorRefresh = tick - _lastConveyorRefreshTick >= ConveyorRefreshIntervalTicks;
+            if (forceConveyorRefresh)
+                _lastConveyorRefreshTick = tick;
+            ConstructCache.GetOrCreateConveyorNetwork(grid, forceConveyorRefresh);
             bool segmentChanged = UpdateSegmentProjectionCache(tick, forceTopologyRefresh);
-            return forceTopologyRefresh || segmentChanged;
+            return forceProjectionRefresh || segmentChanged;
         }
 
         bool UpdateSegmentProjectionCache(int tick, bool force)
@@ -4948,6 +5498,11 @@ namespace GridSchematics
         }
     }
 }
+
+
+
+
+
 
 
 

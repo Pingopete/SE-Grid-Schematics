@@ -73,6 +73,9 @@ namespace GridSchematics
         public bool ShowDebugGrid { get; set; } = true;
         public int GridVisibilityLevel { get; set; } = 1;
         public bool ShowReferenceLines { get; set; } = true;
+        public bool ShowCenterOfMassMarker { get; set; }
+        public bool ShowPanelPositionMarker { get; set; }
+        public bool ShowDockedMobileGrids { get; set; }
         public bool ShowAllConnections { get; set; }
         public bool ShowConveyorOverlay { get; set; } = true;
         public int FillBarsVisibilityLevel { get; set; } = 2;
@@ -119,6 +122,8 @@ namespace GridSchematics
         public int SelectedBlockStackScrollIndex { get; set; }
         public string CargoInfoFilter { get; set; } = "ALL";
         public string CargoInfoFocus { get; set; } = "ALL";
+        public string CargoInfoSource { get; set; } = "LOCAL";
+        public long CargoAuxiliaryGridId { get; set; }
         public int CargoActionScrollIndex { get; set; }
         public int CargoBlockScrollIndex { get; set; }
         public int CargoBlockCursorIndex { get; set; } = 6;
@@ -144,6 +149,8 @@ namespace GridSchematics
         public RenderEngine.CargoPanelSummary CachedCargoSummary { get; set; }
         public string CachedCargoLoadSummaryKey { get; set; }
         public RenderEngine.CargoPanelSummary CachedCargoLoadSummary { get; set; }
+        public int CachedCargoSummaryTick { get; set; } = -1000;
+        public int CachedCargoLoadSummaryTick { get; set; } = -1000;
         public List<HitRegion> HitRegions { get; } = new List<HitRegion>();
         public List<OverlayBlockInfo> OverlayBlockRegions { get; } = new List<OverlayBlockInfo>();
         public List<BlockStackItem> PreviewBlockStackItems { get; } = new List<BlockStackItem>();
