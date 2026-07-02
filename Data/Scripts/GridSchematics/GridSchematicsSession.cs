@@ -9,6 +9,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text;
 using VRage.Game;
 using VRage.Utils;
 using VRageRender;
@@ -27,7 +28,10 @@ namespace GridSchematics
     {
         const string PANEL_TAG = "[GRID_SCHEMATIC]";
         const int PANEL_SCAN_TICK_INTERVAL = 600;
-        const int PERSISTED_SCAN_VERSION = 11;
+        // v12: sample lines carry depth intervals (index|hitCount|s:e,s:e scaled 1/10000) instead of
+        // the collapsed float summary; the summary fields are derived from the intervals on load.
+        const int PERSISTED_SCAN_VERSION = 12;
+        const float PersistedIntervalScale = 10000f;
         const bool PANEL_CURSOR_LIMIT_SAMPLE_RATE = false;
         const long PANEL_CURSOR_SAMPLE_INTERVAL_TICKS = 10000000L / 30L;
         const ushort PANEL_INTERACTION_INPUT_CHANNEL = 38473;
@@ -1942,6 +1946,7 @@ namespace GridSchematics
                     return PersistedScanLoadStatus.Invalid;
 
                 var loadedData = new Dictionary<ScanView, RawRaycastScanData>();
+                var intervalScratch = new List<float>(8);
                 string line;
                 while ((line = reader.ReadLine()) != null)
                 {
@@ -1973,18 +1978,21 @@ namespace GridSchematics
                     data.ScannedUtc = scannedTicks > 0 ? new DateTime(scannedTicks) : DateTime.UtcNow;
                     data.IsReady = true;
 
+                    var profileBuilder = new ScanDepthProfile.Builder(resolution * resolution);
                     for (int i = 0; i < sampleCount; i++)
                     {
                         var sampleLine = reader.ReadLine();
                         if (sampleLine == null)
                             return PersistedScanLoadStatus.Obsolete;
 
-                        LoadPersistedSample(data, sampleLine);
+                        if (!LoadPersistedSampleV12(data, sampleLine, profileBuilder, intervalScratch))
+                            return PersistedScanLoadStatus.Obsolete;
                     }
 
                     if (reader.ReadLine() != "ENDVIEW")
                         return PersistedScanLoadStatus.Obsolete;
 
+                    data.DepthProfile = profileBuilder.Finish();
                     loadedData[view] = data;
                 }
 
@@ -2000,10 +2008,10 @@ namespace GridSchematics
                 cache.RaycastData[ScanView.Top] = top;
                 cache.RaycastData[ScanView.Side] = side;
                 cache.RaycastData[ScanView.Front] = front;
-                cache.UpdateConstructProjection(rootGrid, ScanView.Top, true);
-                cache.UpdateConstructProjection(rootGrid, ScanView.Side, true);
-                cache.UpdateConstructProjection(rootGrid, ScanView.Front, true);
-                cache.GetOrCreateConveyorNetwork(rootGrid, true);
+                // R8: no forced projection/conveyor rebuilds here — they pile ~5 world sweeps plus a
+                // per-grid GetObjectBuilder onto the world-join tick. Projections build lazily on the
+                // first render and the conveyor network refreshes on its own cadence.
+                cache.MarkUpdated();
                 cache.MarkStartupScanCompleted();
                 return PersistedScanLoadStatus.Loaded;
             }
@@ -2084,45 +2092,165 @@ namespace GridSchematics
             writer.WriteLine("SCANNED_TICKS=" + data.ScannedUtc.Ticks);
             writer.WriteLine("SAMPLES=" + nonEmpty);
 
+            var lineBuilder = new StringBuilder(96);
+            var profile = data.DepthProfile;
             for (int i = 0; i < data.Samples.Length; i++)
             {
                 var sample = data.Samples[i];
                 if (!sample.HasHit)
                     continue;
 
-                writer.WriteLine(i + "|" +
-                    sample.HitCount + "|" +
-                    sample.FirstDistance.ToString("R", CultureInfo.InvariantCulture) + "|" +
-                    sample.LastDistance.ToString("R", CultureInfo.InvariantCulture) + "|" +
-                    sample.SegmentCount + "|" +
-                    sample.TransitionComplexity + "|" +
-                    sample.LargestSolidSegment.ToString("R", CultureInfo.InvariantCulture) + "|" +
-                    sample.LargestVoidSegment.ToString("R", CultureInfo.InvariantCulture));
+                lineBuilder.Length = 0;
+                lineBuilder.Append(i).Append('|').Append(sample.HitCount).Append('|');
+
+                int pairStart = 0;
+                int pairCount = 0;
+                if (profile != null && i < profile.CellCount)
+                {
+                    pairStart = profile.GetPairStart(i);
+                    pairCount = profile.GetPairCount(i);
+                }
+
+                if (pairCount > 0)
+                {
+                    for (int p = 0; p < pairCount; p++)
+                    {
+                        if (p > 0)
+                            lineBuilder.Append(',');
+                        int s = ScaleIntervalBound(profile.Bounds[(pairStart + p) * 2]);
+                        int e = ScaleIntervalBound(profile.Bounds[(pairStart + p) * 2 + 1]);
+                        lineBuilder.Append(s).Append(':').Append(e);
+                    }
+                }
+                else
+                {
+                    // Legacy data without a depth profile: persist the collapsed first..last span.
+                    lineBuilder.Append(ScaleIntervalBound(sample.FirstDistance)).Append(':').Append(ScaleIntervalBound(sample.LastDistance));
+                }
+
+                writer.WriteLine(lineBuilder.ToString());
             }
 
             writer.WriteLine("ENDVIEW");
         }
 
-        static void LoadPersistedSample(RawRaycastScanData data, string line)
+        static int ScaleIntervalBound(float value)
         {
-            var parts = line.Split('|');
-            if (parts.Length < 8)
-                return;
+            if (value < 0f)
+                value = 0f;
+            if (value > 1.5f)
+                value = 1.5f;
+            return (int)Math.Round(value * PersistedIntervalScale);
+        }
 
-            int index = int.Parse(parts[0], CultureInfo.InvariantCulture);
+        // Parses "index|hitCount|s0:e0,s1:e1,..." without Split allocations, reconstructing both the
+        // depth profile and the derived summary sample. Returns false on malformed input.
+        static bool LoadPersistedSampleV12(RawRaycastScanData data, string line, ScanDepthProfile.Builder profileBuilder, List<float> intervalScratch)
+        {
+            int cursor = 0;
+            int index;
+            if (!TryParseIntUntil(line, ref cursor, '|', out index))
+                return false;
             if (index < 0 || index >= data.Samples.Length)
-                return;
+                return false;
+
+            int hitCount;
+            if (!TryParseIntUntil(line, ref cursor, '|', out hitCount))
+                return false;
+
+            intervalScratch.Clear();
+            float first = float.MaxValue;
+            float last = float.MinValue;
+            float largestSolid = 0f;
+            float largestVoid = 0f;
+            float previousEnd = -1f;
+            int pairCount = 0;
+            while (cursor < line.Length)
+            {
+                int s;
+                int e;
+                if (!TryParseIntUntil(line, ref cursor, ':', out s))
+                    return false;
+                if (!TryParseIntUntil(line, ref cursor, ',', out e))
+                    return false;
+
+                float start = s / PersistedIntervalScale;
+                float end = e / PersistedIntervalScale;
+                if (end < start)
+                    return false;
+
+                intervalScratch.Add(start);
+                intervalScratch.Add(end);
+                pairCount++;
+
+                if (start < first)
+                    first = start;
+                if (end > last)
+                    last = end;
+                float solid = end - start;
+                if (solid > largestSolid)
+                    largestSolid = solid;
+                if (previousEnd < 0f)
+                {
+                    if (start > largestVoid)
+                        largestVoid = start;
+                }
+                else if (start - previousEnd > largestVoid)
+                {
+                    largestVoid = start - previousEnd;
+                }
+                previousEnd = end;
+            }
+
+            if (pairCount == 0 || hitCount <= 0)
+                return false;
+
+            float trailingVoid = 1f - last;
+            if (trailingVoid > largestVoid)
+                largestVoid = trailingVoid;
 
             data.Samples[index] = new RawRaycastSample
             {
-                HitCount = int.Parse(parts[1], CultureInfo.InvariantCulture),
-                FirstDistance = float.Parse(parts[2], CultureInfo.InvariantCulture),
-                LastDistance = float.Parse(parts[3], CultureInfo.InvariantCulture),
-                SegmentCount = int.Parse(parts[4], CultureInfo.InvariantCulture),
-                TransitionComplexity = int.Parse(parts[5], CultureInfo.InvariantCulture),
-                LargestSolidSegment = float.Parse(parts[6], CultureInfo.InvariantCulture),
-                LargestVoidSegment = float.Parse(parts[7], CultureInfo.InvariantCulture)
+                HitCount = hitCount,
+                FirstDistance = first,
+                LastDistance = last,
+                SegmentCount = pairCount,
+                TransitionComplexity = Math.Max(0, pairCount - 1),
+                LargestSolidSegment = largestSolid,
+                LargestVoidSegment = Math.Max(0f, largestVoid)
             };
+
+            return profileBuilder.AppendCell(index, intervalScratch);
+        }
+
+        // Parses a non-negative integer starting at cursor, consuming through the terminator (or end
+        // of string). '|' and end-of-string are accepted in place of the expected terminator so the
+        // last field of a group parses cleanly.
+        static bool TryParseIntUntil(string line, ref int cursor, char terminator, out int value)
+        {
+            value = 0;
+            if (line == null || cursor >= line.Length)
+                return false;
+
+            bool any = false;
+            while (cursor < line.Length)
+            {
+                char c = line[cursor];
+                if (c == terminator || c == '|' || c == ',')
+                {
+                    cursor++;
+                    return any;
+                }
+
+                if (c < '0' || c > '9')
+                    return false;
+
+                value = value * 10 + (c - '0');
+                cursor++;
+                any = true;
+            }
+
+            return any;
         }
 
         static bool TryParseScanView(string value, out ScanView view)

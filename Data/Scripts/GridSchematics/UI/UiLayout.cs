@@ -151,6 +151,15 @@ namespace GridSchematics
         public const string ToggleBlurId = "scan:blur";
         public const string TogglePerformanceModeId = "render:performance";
         public const string ToggleHighResScanningId = "scan:highres";
+        public const string ToggleSuperSamplingId = "scan:supersampling";
+        public const string SliceResetId = "slice:reset";
+        public const string SliceFrontVerticalId = "slice:front:v";
+        public const string SliceFrontHorizontalId = "slice:front:h";
+        public const string SliceSideVerticalId = "slice:side:v";
+        public const string SliceSideHorizontalId = "slice:side:h";
+        public const string SliceTopVerticalId = "slice:top:v";
+        public const string SliceTopHorizontalId = "slice:top:h";
+        public const int SliceSliderThicknessPx = 12;
         public const string ToggleDebugModeId = "debug:enabled";
         public const string CyclePaletteId = "ui:palette";
         public const string AdjustPaletteHueId = "ui:palette:hue";
@@ -1021,6 +1030,7 @@ namespace GridSchematics
                     AddSettingsRow(regions, x, y, panelWidth, buttonHeight, ref row, ToggleBlurId, "Toggle scan smoothing");
                     AddSettingsRow(regions, x, y, panelWidth, buttonHeight, ref row, TogglePerformanceModeId, "Toggle performance mode");
                     AddSettingsRow(regions, x, y, panelWidth, buttonHeight, ref row, ToggleHighResScanningId, "Toggle high resolution scanning");
+                    AddSettingsRow(regions, x, y, panelWidth, buttonHeight, ref row, ToggleSuperSamplingId, "Toggle scan super sampling");
                     AddSettingsRow(regions, x, y, panelWidth, buttonHeight, ref row, CopyRenderingSettingsId, "Copy rendering settings");
                     AddSettingsRow(regions, x, y, panelWidth, buttonHeight, ref row, PasteRenderingSettingsId, "Paste rendering settings");
                 }
@@ -1422,8 +1432,66 @@ namespace GridSchematics
                 new HitRegion(x, y + (buttonHeight + gap), width, buttonHeight, SetThicknessId, "Depth scan interpretation"),
                 new HitRegion(x, y + (buttonHeight + gap) * 2, width, buttonHeight, SetVoidsId, "Void scan interpretation"),
                 new HitRegion(x, y + (buttonHeight + gap) * 3, width, buttonHeight, ToggleBlurId, "Toggle scan smoothing"),
-                new HitRegion(x, y + (buttonHeight + gap) * 4, width, buttonHeight, RunScanId, "Run hull scan")
+                new HitRegion(x, y + (buttonHeight + gap) * 4, width, buttonHeight, SliceResetId, "Reset slice range"),
+                new HitRegion(x, y + (buttonHeight + gap) * 5, width, buttonHeight, RunScanId, "Run hull scan")
             };
+        }
+
+        // Shared multiview quadrant math (must match DrawSegmentModePanel exactly so the input-side
+        // hit regions line up with the rendered viewports).
+        public static void GetSegmentViewportZones(int screenWidth, int screenHeight, out ScreenZone frontZone, out ScreenZone leftZone, out ScreenZone topZone, out ScreenZone infoZone)
+        {
+            var zones = BuildZones(screenWidth, screenHeight);
+            var center = zones.Center;
+            int gap = 1;
+            int leftWidth = center.Width / 2;
+            int rightWidth = center.Width - leftWidth - gap;
+            int topHeight = center.Height / 2;
+            int bottomHeight = center.Height - topHeight - gap;
+            frontZone = new ScreenZone(ScreenZoneType.CenterViewport, center.X, center.Y, Math.Max(1, leftWidth), Math.Max(1, topHeight));
+            leftZone = new ScreenZone(ScreenZoneType.CenterViewport, center.X + leftWidth + gap, center.Y, Math.Max(1, rightWidth), Math.Max(1, topHeight));
+            topZone = new ScreenZone(ScreenZoneType.CenterViewport, center.X, center.Y + topHeight + gap, Math.Max(1, leftWidth), Math.Max(1, bottomHeight));
+            infoZone = new ScreenZone(ScreenZoneType.CenterViewport, center.X + leftWidth + gap, center.Y + topHeight + gap, Math.Max(1, rightWidth), Math.Max(1, bottomHeight));
+        }
+
+        public static bool IsSliceSliderRegion(string regionId)
+        {
+            return regionId != null && regionId.StartsWith("slice:", StringComparison.Ordinal) && regionId != SliceResetId;
+        }
+
+        public static HitRegion BuildSliceSliderRegion(ScreenZone zone, bool vertical, string id)
+        {
+            int t = SliceSliderThicknessPx;
+            if (vertical)
+                return new HitRegion(zone.X + zone.Width - t, zone.Y + 2, t, Math.Max(1, zone.Height - t - 4), id, "Adjust slice range");
+            return new HitRegion(zone.X + 2, zone.Y + zone.Height - t, Math.Max(1, zone.Width - t - 4), t, id, "Adjust slice range");
+        }
+
+        public static HitRegion[] BuildSegmentSliceSliderRegions(ScreenZone frontZone, ScreenZone leftZone, ScreenZone topZone)
+        {
+            return new[]
+            {
+                BuildSliceSliderRegion(frontZone, true, SliceFrontVerticalId),
+                BuildSliceSliderRegion(frontZone, false, SliceFrontHorizontalId),
+                BuildSliceSliderRegion(leftZone, true, SliceSideVerticalId),
+                BuildSliceSliderRegion(leftZone, false, SliceSideHorizontalId),
+                BuildSliceSliderRegion(topZone, true, SliceTopVerticalId),
+                BuildSliceSliderRegion(topZone, false, SliceTopHorizontalId)
+            };
+        }
+
+        public static void GetSliceSliderTrack(HitRegion region, bool vertical, out float trackStart, out float trackLength)
+        {
+            if (vertical)
+            {
+                trackStart = region.Y + 6f;
+                trackLength = Math.Max(1f, region.Height - 12f);
+            }
+            else
+            {
+                trackStart = region.X + 6f;
+                trackLength = Math.Max(1f, region.Width - 12f);
+            }
         }
 
         public static HitRegion BuildScanProgressCancelRegion(ScreenZone zone)

@@ -74,6 +74,9 @@ namespace GridSchematics
         public bool BlurScan = true;
         public bool PerformanceMode = false;
         public bool HighResScanning = false;
+        // Scan-time 1+4 ray refinement. ON (default) = full fidelity; OFF = recovery-only
+        // refinement (extra rays spent only where the center ray missed) for faster scans.
+        public bool SuperSampling = true;
         public bool ShowInfoPanel = false;
         public string UiPalette = "BLUE";
         public int UiHueShift = DefaultUiMainColorHue;
@@ -254,6 +257,12 @@ namespace GridSchematics
                         bool highResScanning;
                         if (bool.TryParse(value, out highResScanning))
                             HighResScanning = highResScanning;
+                        break;
+                    case "SUPER_SAMPLING":
+                    case "SUPERSAMPLING":
+                        bool superSampling;
+                        if (bool.TryParse(value, out superSampling))
+                            SuperSampling = superSampling;
                         break;
                     case "INFO_PANEL":
                     case "INFO":
@@ -996,7 +1005,7 @@ namespace GridSchematics
 
         public string ToIniText()
         {
-            return string.Format("ENABLED={0}\nVIEW={1}\nRES={2}\nFILLMODE={3}\nHULL_SCAN_COLOR={4}\nDEBUG={5}\nPERF_STATS={6}\nBLOCKS={7}\nBORDER={8}\nGRID={9}\nREFERENCE={10}\nHULL_SCAN={11}\nCONNECTIONS={12}\nBLOCKS_OCCLUDE_CONVEYORS={13}\nSHOW_CONNECTED_NETWORKS={14}\nCONVEYOR={15}\nFILL_BARS={16}\nFILL_BARS_LEVEL={17}\nBLUR={18}\nPERFORMANCE_MODE={19}\nHIGH_RES_SCANNING={20}\nINFO_PANEL={21}\nOVERLAY={22}\nUI_PALETTE={23}\nUI_COLOR_HUE={24}\nUI_BRIGHTNESS={25:0.00}\nUI_SATURATION={26:0.00}\nUI_ALPHA={27:0.00}\nUI_FONT={28}\nUI_HIGHLIGHT_COLOR_HUE={29}\nUI_ACCENT_BRIGHTNESS={30:0.00}\nUI_ACCENT_SATURATION={31:0.00}\nUI_PANEL_BRIGHTNESS={32:0.00}\nUI_PANEL_ALPHA={33:0.00}\nSCHEMATIC_MAIN_COLOR_HUE={34}\nSCHEMATIC_SECONDARY_COLOR_HUE={35}\nCONVEYOR_COLOR_HUE={36}\nHULL_SCAN_ALPHA={37:0.00}\nSCHEMATIC_ALPHA={38:0.00}\nSTORAGE_COLOR={39}\nEFFECTOR_COLOR={40}\nROT_TOP={41}\nROT_LEFT={42}\nROT_FRONT={43}\nMOUSE_CONTROL={44}\nMOUSE_SENSITIVITY={45}\nALLOW_GRID_ROTATION={46}\nCURSOR_CALIBRATED={47}\nCURSOR_CALIB_M11={48:R}\nCURSOR_CALIB_M12={49:R}\nCURSOR_CALIB_M13={50:R}\nCURSOR_CALIB_M21={51:R}\nCURSOR_CALIB_M22={52:R}\nCURSOR_CALIB_M23={53:R}\nCENTER_OF_MASS={54}\nPANEL_POSITION={55}\nDOCKED_MOBILE_GRIDS={56}\n", Enabled, View, Resolution, NormalizeFillMode(FillMode), NormalizeHullScanColorScale(HullScanColorScale), ShowDebug, ShowPerfStats, ShowBlocks, ShowBorder, ShowGrid, ShowReference, ShowHullScan, ShowAllConnections, BlocksOccludeConveyors, ShowConnectedNetworks, ShowConveyor, ShowFillBars, NormalizeFillBarsVisibilityLevel(FillBarsVisibilityLevel), BlurScan, PerformanceMode, HighResScanning, ShowInfoPanel, OverlayMode, UiPalette, UiHueShift, UiBrightness, UiSaturation, UiAlpha, NormalizeUiFont(UiFont), UiAccentHueShift, UiAccentBrightness, UiAccentSaturation, UiPanelBrightness, UiPanelAlpha, SchematicMainHue, SchematicSecondaryHue, ConveyorHue, HullScanAlpha, SchematicAlpha, StorageColor, EffectorColor, RotationTop, RotationLeft, RotationFront, MouseControl, NormalizeMouseSensitivity(MouseSensitivity), AllowGridRotation, HasCursorCalibration, CursorCalibrationM11, CursorCalibrationM12, CursorCalibrationM13, CursorCalibrationM21, CursorCalibrationM22, CursorCalibrationM23, ShowCenterOfMass, ShowPanelPosition, ShowDockedMobileGrids);
+            return string.Format("ENABLED={0}\nVIEW={1}\nRES={2}\nFILLMODE={3}\nHULL_SCAN_COLOR={4}\nDEBUG={5}\nPERF_STATS={6}\nBLOCKS={7}\nBORDER={8}\nGRID={9}\nREFERENCE={10}\nHULL_SCAN={11}\nCONNECTIONS={12}\nBLOCKS_OCCLUDE_CONVEYORS={13}\nSHOW_CONNECTED_NETWORKS={14}\nCONVEYOR={15}\nFILL_BARS={16}\nFILL_BARS_LEVEL={17}\nBLUR={18}\nPERFORMANCE_MODE={19}\nHIGH_RES_SCANNING={20}\nSUPER_SAMPLING={57}\nINFO_PANEL={21}\nOVERLAY={22}\nUI_PALETTE={23}\nUI_COLOR_HUE={24}\nUI_BRIGHTNESS={25:0.00}\nUI_SATURATION={26:0.00}\nUI_ALPHA={27:0.00}\nUI_FONT={28}\nUI_HIGHLIGHT_COLOR_HUE={29}\nUI_ACCENT_BRIGHTNESS={30:0.00}\nUI_ACCENT_SATURATION={31:0.00}\nUI_PANEL_BRIGHTNESS={32:0.00}\nUI_PANEL_ALPHA={33:0.00}\nSCHEMATIC_MAIN_COLOR_HUE={34}\nSCHEMATIC_SECONDARY_COLOR_HUE={35}\nCONVEYOR_COLOR_HUE={36}\nHULL_SCAN_ALPHA={37:0.00}\nSCHEMATIC_ALPHA={38:0.00}\nSTORAGE_COLOR={39}\nEFFECTOR_COLOR={40}\nROT_TOP={41}\nROT_LEFT={42}\nROT_FRONT={43}\nMOUSE_CONTROL={44}\nMOUSE_SENSITIVITY={45}\nALLOW_GRID_ROTATION={46}\nCURSOR_CALIBRATED={47}\nCURSOR_CALIB_M11={48:R}\nCURSOR_CALIB_M12={49:R}\nCURSOR_CALIB_M13={50:R}\nCURSOR_CALIB_M21={51:R}\nCURSOR_CALIB_M22={52:R}\nCURSOR_CALIB_M23={53:R}\nCENTER_OF_MASS={54}\nPANEL_POSITION={55}\nDOCKED_MOBILE_GRIDS={56}\n", Enabled, View, Resolution, NormalizeFillMode(FillMode), NormalizeHullScanColorScale(HullScanColorScale), ShowDebug, ShowPerfStats, ShowBlocks, ShowBorder, ShowGrid, ShowReference, ShowHullScan, ShowAllConnections, BlocksOccludeConveyors, ShowConnectedNetworks, ShowConveyor, ShowFillBars, NormalizeFillBarsVisibilityLevel(FillBarsVisibilityLevel), BlurScan, PerformanceMode, HighResScanning, ShowInfoPanel, OverlayMode, UiPalette, UiHueShift, UiBrightness, UiSaturation, UiAlpha, NormalizeUiFont(UiFont), UiAccentHueShift, UiAccentBrightness, UiAccentSaturation, UiPanelBrightness, UiPanelAlpha, SchematicMainHue, SchematicSecondaryHue, ConveyorHue, HullScanAlpha, SchematicAlpha, StorageColor, EffectorColor, RotationTop, RotationLeft, RotationFront, MouseControl, NormalizeMouseSensitivity(MouseSensitivity), AllowGridRotation, HasCursorCalibration, CursorCalibrationM11, CursorCalibrationM12, CursorCalibrationM13, CursorCalibrationM21, CursorCalibrationM22, CursorCalibrationM23, ShowCenterOfMass, ShowPanelPosition, ShowDockedMobileGrids, SuperSampling);
         }
     }
 }

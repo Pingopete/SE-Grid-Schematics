@@ -129,6 +129,8 @@ namespace GridSchematics
                             active = performanceMode;
                         else if (region.Id == UiLayout.ToggleHighResScanningId)
                             active = highResScanning;
+                        else if (region.Id == UiLayout.ToggleSuperSamplingId)
+                            active = CurrentSuperSampling;
                         else if (region.Id == UiLayout.ToggleDebugModeId)
                             active = showDebug;
                         else if (region.Id == UiLayout.TogglePerfStatsId)
@@ -216,6 +218,7 @@ namespace GridSchematics
                         region.Id == UiLayout.ToggleBlurId ? "RENDER SMOOTHING " + (blurScan ? "ON" : "OFF") :
                         region.Id == UiLayout.TogglePerformanceModeId ? "PERFORMANCE MODE " + (performanceMode ? "ON" : "OFF") :
                         region.Id == UiLayout.ToggleHighResScanningId ? "HIGH RES SCANNING " + (highResScanning ? "ON" : "OFF") :
+                        region.Id == UiLayout.ToggleSuperSamplingId ? "SUPER SAMPLING " + (CurrentSuperSampling ? "ON" : "OFF") :
                         region.Id == UiLayout.ToggleDebugModeId ? "ENABLE DEBUG " + (showDebug ? "ON" : "OFF") :
                         region.Id == UiLayout.TogglePerfStatsId ? "PERF STATS " + (showPerfStats ? "ON" : "OFF") :
                         region.Id == UiLayout.SettingsStyleHeaderId ? FormatSettingsHeaderLabel("STYLE", settingsExpandedMask, UiLayout.SettingsCategoryStyle) :

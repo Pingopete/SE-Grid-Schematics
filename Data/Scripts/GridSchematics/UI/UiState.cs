@@ -98,6 +98,25 @@ namespace GridSchematics
         public ShipGrid SegmentTopGrid { get; set; }
         public int LastSegmentProjectionRefreshTick { get; set; } = -600;
         public int SegmentProjectionRefreshStep { get; set; }
+        // Panel-local hull-scan slice box in basis-cell coordinates (inclusive block ranges).
+        // float.MinValue = axis unset (full extent). The underlying scan data is construct-shared;
+        // this is pure per-panel view state — two panels can slice the same scan differently.
+        public float SliceXMin { get; set; } = float.MinValue;
+        public float SliceXMax { get; set; } = float.MinValue;
+        public float SliceYMin { get; set; } = float.MinValue;
+        public float SliceYMax { get; set; } = float.MinValue;
+        public float SliceZMin { get; set; } = float.MinValue;
+        public float SliceZMax { get; set; } = float.MinValue;
+
+        public void ResetSliceBox()
+        {
+            SliceXMin = float.MinValue;
+            SliceXMax = float.MinValue;
+            SliceYMin = float.MinValue;
+            SliceYMax = float.MinValue;
+            SliceZMin = float.MinValue;
+            SliceZMax = float.MinValue;
+        }
         public string ModalMessage { get; set; }
         public bool CalibrationPromptDismissed { get; set; }
         public bool ShowCalibrationPrompt { get; set; }

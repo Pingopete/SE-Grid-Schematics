@@ -14,7 +14,8 @@ namespace GridSchematics
     {
         const int PipelineAlpha = 128;
         const int SharedCursorAlpha = 128;
-        const int MaxScanRunCacheEntries = 24;
+        // Sized for multiview: 3 viewports x fill modes x per-panel slice ranges all share this cache.
+        const int MaxScanRunCacheEntries = 48;
         const int MaxTopologyKeyCacheEntries = 12;
         const int MaxOverlaySourceCacheEntries = 18;
         const int MaxProjectionTransformCacheEntries = 24;
@@ -51,6 +52,94 @@ namespace GridSchematics
         static int CurrentConveyorHue;
         static bool CurrentBlocksOccludeConveyors = true;
         static bool CurrentShowConnectedNetworks;
+        static bool CurrentSuperSampling = true;
+        // Per-panel 3D slice box applied to the hull scan image. Set around each DrawShipGridOverlay
+        // call from the panel's UiState; default(ScanSliceView) = full extents = legacy render path.
+        static ScanSliceView CurrentScanSlice;
+        // Slice read context for the scan value functions (set per DrawRaycastScanImage invocation).
+        static bool CurrentSliceActive;
+        static float CurrentSliceRangeStart;
+        static float CurrentSliceRangeEnd = 1f;
+        static float CurrentSliceMaxSolid = 1f;
+        static int CurrentSliceMaxIntervals = 1;
+
+        // A slice request in basis-cell coordinates. Depth narrows along the view's depth axis
+        // (masked interval reads); plane ranges crop the projected image. float.MinValue = axis unset.
+        struct ScanSliceView
+        {
+            public bool Active;
+            public float DepthMin;
+            public float DepthMax;
+            public float PlaneMinX;
+            public float PlaneMaxX;
+            public float PlaneMinY;
+            public float PlaneMaxY;
+
+            public bool HasDepth
+            {
+                get { return DepthMin > float.MinValue && DepthMax > float.MinValue; }
+            }
+
+            public bool HasPlaneX
+            {
+                get { return PlaneMinX > float.MinValue && PlaneMaxX > float.MinValue; }
+            }
+
+            public bool HasPlaneY
+            {
+                get { return PlaneMinY > float.MinValue && PlaneMaxY > float.MinValue; }
+            }
+        }
+
+        // Maps the panel's basis-axis slice box (X/Y/Z cell ranges) onto a view's projection:
+        // Front projects (X,Y) with depth Z; Side projects (Z,Y) with depth X; Top projects (X,Z)
+        // with depth Y. The same box therefore shows up in every viewport, each respecting its own
+        // projection — in-plane as a crop, on the depth axis as a masked interval read.
+        static ScanSliceView BuildScanSliceView(UiState ui, ScanView view)
+        {
+            var slice = new ScanSliceView
+            {
+                DepthMin = float.MinValue,
+                DepthMax = float.MinValue,
+                PlaneMinX = float.MinValue,
+                PlaneMaxX = float.MinValue,
+                PlaneMinY = float.MinValue,
+                PlaneMaxY = float.MinValue
+            };
+            if (ui == null)
+                return slice;
+
+            switch (view)
+            {
+                case ScanView.Front:
+                    slice.PlaneMinX = ui.SliceXMin;
+                    slice.PlaneMaxX = ui.SliceXMax;
+                    slice.PlaneMinY = ui.SliceYMin;
+                    slice.PlaneMaxY = ui.SliceYMax;
+                    slice.DepthMin = ui.SliceZMin;
+                    slice.DepthMax = ui.SliceZMax;
+                    break;
+                case ScanView.Side:
+                    slice.PlaneMinX = ui.SliceZMin;
+                    slice.PlaneMaxX = ui.SliceZMax;
+                    slice.PlaneMinY = ui.SliceYMin;
+                    slice.PlaneMaxY = ui.SliceYMax;
+                    slice.DepthMin = ui.SliceXMin;
+                    slice.DepthMax = ui.SliceXMax;
+                    break;
+                default:
+                    slice.PlaneMinX = ui.SliceXMin;
+                    slice.PlaneMaxX = ui.SliceXMax;
+                    slice.PlaneMinY = ui.SliceZMin;
+                    slice.PlaneMaxY = ui.SliceZMax;
+                    slice.DepthMin = ui.SliceYMin;
+                    slice.DepthMax = ui.SliceYMax;
+                    break;
+            }
+
+            slice.Active = slice.HasDepth || slice.HasPlaneX || slice.HasPlaneY;
+            return slice;
+        }
         static string CurrentUiFont = "MOZARTGLOW";
         static string CurrentTextFontId = "GridSchematics_MozartGlow";
         static float CurrentButtonTextScaleMultiplier = 1f;
@@ -184,6 +273,10 @@ namespace GridSchematics
         {
             public List<CachedScanRun> Runs = new List<CachedScanRun>();
             public int LastUsed;
+            // Normalization maxes for slice renders (computed once per build; the color scale always
+            // spans the CURRENT slice range, per design).
+            public float SliceMaxSolid = 1f;
+            public int SliceMaxIntervals = 1;
         }
 
         class CachedConveyorLineKeys
@@ -307,6 +400,7 @@ namespace GridSchematics
                 CurrentConveyorHue = app.Config.ConveyorHue;
                 CurrentBlocksOccludeConveyors = app.Config.BlocksOccludeConveyors;
                 CurrentShowConnectedNetworks = app.Config.ShowConnectedNetworks;
+                CurrentSuperSampling = app.Config.SuperSampling;
                 CurrentUiFont = GridSchematicsConfig.NormalizeUiFont(app.Config.UiFont);
                 CurrentTextFontId = GridSchematicsConfig.GetUiFontSubtype(CurrentUiFont);
                 InfoDrawerTextFontId = GetInfoDrawerFontSubtype(CurrentUiFont);
@@ -404,7 +498,9 @@ namespace GridSchematics
                     else
                     {
                         bool drawDebugBlocks = app.Ui.ShowDiscoveredBlocks;
+                        CurrentScanSlice = BuildScanSliceView(app.Ui, activeScanView);
                         DrawShipGridOverlay(frame, renderCenter, activeShipGrid, app.ConstructCache?.GetRaycastData(activeScanView), app.Config.FillMode, drawDebugBlocks, app.Ui.ShowShipBorder, app.Ui.ShowHullScan, drawDebugGrid, drawReference, app.Ui.BlurScanRender, app.Config.ShowDebug, rotationSteps, scanRaycastStep);
+                        CurrentScanSlice = default(ScanSliceView);
                         DrawShipReferenceMarkers(frame, renderCenter, activeShipGrid, app.ConstructCache, app.OwnerBlock, app.Ui.ShowCenterOfMassMarker, app.Ui.ShowPanelPositionMarker, rotationSteps);
                         DrawDockedMobileGridBorders(frame, renderCenter, activeShipGrid, app.ConstructCache, true, app.Ui.ShowShipBorder, rotationSteps);
                         if (app.Ui.ShowConveyorOverlay)
@@ -705,7 +801,9 @@ namespace GridSchematics
         static void DrawSegmentProjection(MySpriteDrawFrame frame, ScreenZone zone, GridSchematicsLcdApp app, ShipGrid shipGrid, ScanView view, int rotationSteps, string label, bool cursorOnlyRender)
         {
             int raycastStep = app.Config.PerformanceMode ? SegmentRaycastRenderStep : 1;
+            CurrentScanSlice = BuildScanSliceView(app.Ui, view);
             DrawShipGridOverlay(frame, zone, shipGrid, app.ConstructCache?.GetRaycastData(view), app.Config.FillMode, false, app.Ui.ShowShipBorder, app.Ui.ShowHullScan, false, false, app.Ui.BlurScanRender, false, rotationSteps, raycastStep);
+            CurrentScanSlice = default(ScanSliceView);
             if (app.Ui.ShowDebugGrid)
                 DrawSegmentBlockAlignedGrid(frame, zone, shipGrid, rotationSteps);
             if (app.Ui.ShowReferenceLines)
@@ -717,6 +815,9 @@ namespace GridSchematics
             var panelCenter = new Vector2(zone.X + zone.Width * 0.5f, zone.Y + zone.Height * 0.5f);
             DrawScreenRectBorder(frame, panelCenter, new Vector2(zone.Width, zone.Height), UiAccentDim);
 
+            DrawSegmentSliceSlider(frame, zone, app, shipGrid, view, rotationSteps, true);
+            DrawSegmentSliceSlider(frame, zone, app, shipGrid, view, rotationSteps, false);
+
             AddSprite(frame, new MySprite(
                 SpriteType.TEXT,
                 label,
@@ -727,6 +828,100 @@ namespace GridSchematics
                 TextAlignment.LEFT,
                 0.55f
             ));
+        }
+
+        // One slice-slider strip on a multiview viewport edge: vertical (right edge) or horizontal
+        // (bottom edge). Draws the track, the active band, the two grab handles, and the full-width
+        // identifier lines across the viewport image at the slice bounds.
+        static void DrawSegmentSliceSlider(MySpriteDrawFrame frame, ScreenZone zone, GridSchematicsLcdApp app, ShipGrid shipGrid, ScanView view, int rotationSteps, bool vertical)
+        {
+            if (app == null || shipGrid == null || shipGrid.IsEmpty)
+                return;
+
+            string regionId;
+            if (view == ScanView.Front)
+                regionId = vertical ? UiLayout.SliceFrontVerticalId : UiLayout.SliceFrontHorizontalId;
+            else if (view == ScanView.Side)
+                regionId = vertical ? UiLayout.SliceSideVerticalId : UiLayout.SliceSideHorizontalId;
+            else
+                regionId = vertical ? UiLayout.SliceTopVerticalId : UiLayout.SliceTopHorizontalId;
+
+            // Axis per region (mirrors GetSliceAxisForRegion): front/side vertical = Y, top vertical = Z,
+            // side horizontal = Z, front/top horizontal = X.
+            int axis;
+            if (regionId == UiLayout.SliceFrontVerticalId || regionId == UiLayout.SliceSideVerticalId)
+                axis = 1;
+            else if (regionId == UiLayout.SliceTopVerticalId || regionId == UiLayout.SliceSideHorizontalId)
+                axis = 2;
+            else
+                axis = 0;
+
+            float boundsMin;
+            float boundsMax;
+            if (!app.TryGetSliceAxisBounds(axis, out boundsMin, out boundsMax) || boundsMax <= boundsMin)
+                return;
+
+            float curMin;
+            float curMax;
+            app.GetSliceAxisRange(axis, boundsMin, boundsMax, out curMin, out curMax);
+            bool narrowed = curMin > boundsMin + 0.01f || curMax < boundsMax - 0.01f;
+
+            var region = UiLayout.BuildSliceSliderRegion(zone, vertical, regionId);
+            float trackStart;
+            float trackLength;
+            UiLayout.GetSliceSliderTrack(region, vertical, out trackStart, out trackLength);
+            float range = Math.Max(0.001f, boundsMax - boundsMin);
+            float tMin = vertical ? (boundsMax - curMax) / range : (curMin - boundsMin) / range;
+            float tMax = vertical ? (boundsMax - curMin) / range : (curMax - boundsMin) / range;
+            float bandStart = trackStart + tMin * trackLength;
+            float bandEnd = trackStart + tMax * trackLength;
+            bool hover = string.Equals(app.TouchInput != null ? app.TouchInput.HoverRegionId : null, regionId, StringComparison.Ordinal);
+
+            var trackColor = WithAlpha(UiAccentDim, 90);
+            var bandColor = WithAlpha(hover || narrowed ? UiAccent : UiAccentDim, narrowed ? 190 : 120);
+            var handleColor = hover || narrowed ? UiText : UiTextMuted;
+
+            if (vertical)
+            {
+                float cx = region.X + region.Width * 0.5f;
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(cx, trackStart + trackLength * 0.5f), new Vector2(2f, trackLength), trackColor));
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(cx, (bandStart + bandEnd) * 0.5f), new Vector2(4f, Math.Max(2f, bandEnd - bandStart)), bandColor));
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(cx, bandStart), new Vector2(region.Width - 2f, 5f), handleColor));
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(cx, bandEnd), new Vector2(region.Width - 2f, 5f), handleColor));
+            }
+            else
+            {
+                float cy = region.Y + region.Height * 0.5f;
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(trackStart + trackLength * 0.5f, cy), new Vector2(trackLength, 2f), trackColor));
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2((bandStart + bandEnd) * 0.5f, cy), new Vector2(Math.Max(2f, bandEnd - bandStart), 4f), bandColor));
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(bandStart, cy), new Vector2(5f, region.Height - 2f), handleColor));
+                AddSprite(frame, new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(bandEnd, cy), new Vector2(5f, region.Height - 2f), handleColor));
+            }
+
+            // Identifier lines across the viewport image at the slice block boundaries.
+            if (!narrowed)
+                return;
+
+            var transform = GetOrBuildProjectionTransform(shipGrid, zone, rotationSteps);
+            if (!transform.IsValid || transform.CellSize <= 0f)
+                return;
+
+            var lineColor = WithAlpha(UiAccent, 150);
+            if (vertical)
+            {
+                // Axis is the view's projected-Y: localY = Max2D.Y - value + 0.5; mark the block edges.
+                float localYTop = shipGrid.Max2D.Y - (curMax + 0.5f) + 0.5f;
+                float localYBottom = shipGrid.Max2D.Y - (curMin - 0.5f) + 0.5f;
+                DrawClippedScreenLine(frame, zone, transform.ProjectLocalPoint(0f, localYTop), transform.ProjectLocalPoint(transform.SourceWidth, localYTop), 1f, lineColor);
+                DrawClippedScreenLine(frame, zone, transform.ProjectLocalPoint(0f, localYBottom), transform.ProjectLocalPoint(transform.SourceWidth, localYBottom), 1f, lineColor);
+            }
+            else
+            {
+                float localXLeft = (curMin - 0.5f) - shipGrid.Min2D.X + 0.5f;
+                float localXRight = (curMax + 0.5f) - shipGrid.Min2D.X + 0.5f;
+                DrawClippedScreenLine(frame, zone, transform.ProjectLocalPoint(localXLeft, 0f), transform.ProjectLocalPoint(localXLeft, transform.SourceHeight), 1f, lineColor);
+                DrawClippedScreenLine(frame, zone, transform.ProjectLocalPoint(localXRight, 0f), transform.ProjectLocalPoint(localXRight, transform.SourceHeight), 1f, lineColor);
+            }
         }
 
         static void DrawSegmentBlockAlignedGrid(MySpriteDrawFrame frame, ScreenZone zone, ShipGrid shipGrid, int rotationSteps)
@@ -856,6 +1051,7 @@ namespace GridSchematics
                     region.Id == UiLayout.SetThicknessId ? "DEPTH" :
                     region.Id == UiLayout.SetVoidsId ? "VOIDS" :
                     region.Id == UiLayout.ToggleBlurId ? "SMOOTH" :
+                    region.Id == UiLayout.SliceResetId ? "RESET SLICE" :
                     region.Id == UiLayout.RunScanId ? "RUN SCAN" : region.Hint;
                 DrawViewButton(frame, region, label, active, string.Equals(app.TouchInput.HoverRegionId, region.Id, StringComparison.Ordinal));
             }
@@ -4940,14 +5136,73 @@ namespace GridSchematics
             // projected region is elongated (e.g. Front/Side of a long ship) only one axis has sub-pixel
             // cells; the previous single Math.Min-based step coarsened BOTH axes, pixelating the image until
             // you zoomed in. Independent stepX/stepY keeps full resolution on the axis that has screen space.
-            int stepX = Math.Max(baseStep, GetScreenResolvedScanStep(baseSampleWidth));
-            int stepY = Math.Max(baseStep, GetScreenResolvedScanStep(baseSampleHeight));
+            int stepX = Math.Max(baseStep, GetScreenResolvedScanStep(baseSampleWidth, resolution));
+            int stepY = Math.Max(baseStep, GetScreenResolvedScanStep(baseSampleHeight, resolution));
             float tileOverlap = (stepX > 1 || stepY > 1) ? 0.05f : 0.75f;
             float sampleWidth = baseSampleWidth;
             float sampleHeight = baseSampleHeight * stepY;
-            var cachedRuns = GetOrBuildScanRuns(scanData, fillMode, blurScan, stepX, stepY);
+
+            // Resolve the panel's slice box against this scan: depth narrows to a normalized range
+            // along the ray axis (masked interval reads), plane ranges crop to a sample-index window.
+            var slice = CurrentScanSlice;
+            bool sliceActive = slice.Active && scanData.DepthProfile != null;
+            float rangeStart = 0f;
+            float rangeEnd = 1f;
+            int cellMinX = 0;
+            int cellMaxX = resolution - 1;
+            int cellMinY = 0;
+            int cellMaxY = resolution - 1;
+            if (sliceActive)
+            {
+                if (slice.HasDepth)
+                {
+                    float depthSpan = Math.Max(0.001f, scanData.DepthEnd - scanData.DepthStart);
+                    rangeStart = ClampUnit((slice.DepthMin - scanData.DepthStart) / depthSpan);
+                    rangeEnd = ClampUnit((slice.DepthMax + 1f - scanData.DepthStart) / depthSpan);
+                    if (rangeEnd <= rangeStart)
+                        rangeEnd = Math.Min(1f, rangeStart + 0.0005f);
+                }
+
+                if (slice.HasPlaneX)
+                {
+                    cellMinX = (int)Math.Floor((slice.PlaneMinX - 0.5f - scanData.SampleMinX) / spanX * resolution);
+                    cellMaxX = (int)Math.Ceiling((slice.PlaneMaxX + 0.5f - scanData.SampleMinX) / spanX * resolution);
+                }
+
+                if (slice.HasPlaneY)
+                {
+                    cellMinY = (int)Math.Floor((slice.PlaneMinY - 0.5f - scanData.SampleMinY) / spanY * resolution);
+                    cellMaxY = (int)Math.Ceiling((slice.PlaneMaxY + 0.5f - scanData.SampleMinY) / spanY * resolution);
+                }
+
+                if (cellMinX < 0) cellMinX = 0;
+                if (cellMinY < 0) cellMinY = 0;
+                if (cellMaxX > resolution - 1) cellMaxX = resolution - 1;
+                if (cellMaxY > resolution - 1) cellMaxY = resolution - 1;
+                if (cellMaxX < cellMinX || cellMaxY < cellMinY)
+                    return;
+
+                // A slice that resolves to the full volume renders through the legacy path so the
+                // image (and its cache entries) stay byte-identical to an unsliced panel.
+                if (rangeStart <= 0.0001f && rangeEnd >= 0.9999f &&
+                    cellMinX == 0 && cellMinY == 0 && cellMaxX == resolution - 1 && cellMaxY == resolution - 1)
+                    sliceActive = false;
+            }
+
+            CurrentSliceActive = sliceActive;
+            CurrentSliceRangeStart = rangeStart;
+            CurrentSliceRangeEnd = rangeEnd;
+
+            var cachedRuns = GetOrBuildScanRuns(scanData, fillMode, blurScan, stepX, stepY, sliceActive, rangeStart, rangeEnd, cellMinX, cellMaxX, cellMinY, cellMaxY);
             if (cachedRuns == null || cachedRuns.Runs == null || cachedRuns.Runs.Count == 0)
+            {
+                CurrentSliceActive = false;
                 return;
+            }
+
+            // Slice normalization travels with the cached runs so cache hits render identically.
+            CurrentSliceMaxSolid = cachedRuns.SliceMaxSolid;
+            CurrentSliceMaxIntervals = cachedRuns.SliceMaxIntervals;
 
             for (int i = 0; i < cachedRuns.Runs.Count; i++)
             {
@@ -4955,11 +5210,22 @@ namespace GridSchematics
                 var run = cachedRuns.Runs[i];
                 DrawScanRun(frame, zone, transform, shipGrid, scanData, resolution, stepX, stepY, run.Y, run.StartX, run.EndX, run.Shade, sampleWidth, sampleHeight, tileOverlap, fillMode);
             }
+
+            CurrentSliceActive = false;
         }
 
-        static CachedScanRuns GetOrBuildScanRuns(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY)
+        static float ClampUnit(float value)
         {
-            string key = BuildScanRunCacheKey(scanData, fillMode, blurScan, stepX, stepY);
+            if (value < 0f)
+                return 0f;
+            if (value > 1f)
+                return 1f;
+            return value;
+        }
+
+        static CachedScanRuns GetOrBuildScanRuns(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY, bool sliceActive, float rangeStart, float rangeEnd, int cellMinX, int cellMaxX, int cellMinY, int cellMaxY)
+        {
+            string key = BuildScanRunCacheKey(scanData, fillMode, blurScan, stepX, stepY, sliceActive, rangeStart, rangeEnd, cellMinX, cellMaxX, cellMinY, cellMaxY);
             CachedScanRuns cached;
             if (ScanRunCache.TryGetValue(key, out cached) && cached != null)
             {
@@ -4969,26 +5235,66 @@ namespace GridSchematics
             }
             TrackCacheMiss();
 
-            cached = BuildScanRuns(scanData, fillMode, blurScan, stepX, stepY);
+            cached = BuildScanRuns(scanData, fillMode, blurScan, stepX, stepY, sliceActive, rangeStart, rangeEnd, cellMinX, cellMaxX, cellMinY, cellMaxY);
             cached.LastUsed = ++CacheUseCounter;
             ScanRunCache[key] = cached;
             TrimScanRunCache();
             return cached;
         }
 
-        static CachedScanRuns BuildScanRuns(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY)
+        static CachedScanRuns BuildScanRuns(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY, bool sliceActive, float rangeStart, float rangeEnd, int cellMinX, int cellMaxX, int cellMinY, int cellMaxY)
         {
             var cached = new CachedScanRuns();
             int resolution = scanData.Resolution;
+
+            if (sliceActive)
+            {
+                // Normalization pass: the color scale spans the CURRENT slice, not the whole ship.
+                // Step-independent (walks every in-window cell) so zooming never re-shades the image.
+                var profile = scanData.DepthProfile;
+                float maxSolid = 0f;
+                int maxIntervals = 0;
+                if (profile != null)
+                {
+                    for (int y = cellMinY; y <= cellMaxY; y++)
+                    {
+                        int rowBase = y * resolution;
+                        for (int x = cellMinX; x <= cellMaxX; x++)
+                        {
+                            int cell = rowBase + x;
+                            if (cell >= profile.CellCount)
+                                continue;
+                            if (profile.GetPairCount(cell) == 0)
+                                continue;
+
+                            float solid = profile.GetSolidInRange(cell, rangeStart, rangeEnd);
+                            if (solid > maxSolid)
+                                maxSolid = solid;
+                            int intervals = profile.GetIntervalCountInRange(cell, rangeStart, rangeEnd);
+                            if (intervals > maxIntervals)
+                                maxIntervals = intervals;
+                        }
+                    }
+                }
+
+                cached.SliceMaxSolid = Math.Max(0.0001f, maxSolid);
+                cached.SliceMaxIntervals = Math.Max(1, maxIntervals);
+                CurrentSliceMaxSolid = cached.SliceMaxSolid;
+                CurrentSliceMaxIntervals = cached.SliceMaxIntervals;
+            }
+
             for (int y = 0; y < resolution; y += stepY)
             {
+                if (sliceActive && (y + stepY - 1 < cellMinY || y > cellMaxY))
+                    continue;
+
                 int runStart = -1;
                 int runShade = 0;
 
                 for (int x = 0; x <= resolution; x += stepX)
                 {
                     int shade = 0;
-                    if (x < resolution)
+                    if (x < resolution && (!sliceActive || (x + stepX - 1 >= cellMinX && x <= cellMaxX)))
                     {
                         float value = GetScanRunValue(scanData, x, y, stepX, stepY, fillMode, blurScan);
                         if (value > 0.01f)
@@ -5031,7 +5337,7 @@ namespace GridSchematics
             return cached;
         }
 
-        static int GetScreenResolvedScanStep(float sampleSize)
+        static int GetScreenResolvedScanStep(float sampleSize, int resolution)
         {
             if (sampleSize >= 1f)
                 return 1;
@@ -5039,8 +5345,11 @@ namespace GridSchematics
             int step = (int)Math.Ceiling(1f / Math.Max(0.05f, sampleSize));
             if (step < 1)
                 step = 1;
-            if (step > 4)
-                step = 4;
+            // The clamp scales with scan resolution: a 1024 scan shown in a small multiview quadrant
+            // legitimately needs step 8-16, or the run builder walks a million sub-pixel cells.
+            int maxStep = Math.Max(4, resolution >> 6);
+            if (step > maxStep)
+                step = maxStep;
             return step;
         }
 
@@ -5066,10 +5375,10 @@ namespace GridSchematics
             return count > 0 ? total / count : 0f;
         }
 
-        static string BuildScanRunCacheKey(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY)
+        static string BuildScanRunCacheKey(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY, bool sliceActive, float rangeStart, float rangeEnd, int cellMinX, int cellMaxX, int cellMinY, int cellMaxY)
         {
             int maxThicknessBucket = (int)(scanData.MaxThickness * 1000f);
-            return scanData.GetHashCode() + ":" +
+            string key = scanData.GetHashCode() + ":" +
                 scanData.View + ":" +
                 scanData.ScannedUtc.Ticks + ":" +
                 scanData.Resolution + ":" +
@@ -5084,6 +5393,10 @@ namespace GridSchematics
                 blurScan + ":" +
                 stepX + ":" +
                 stepY;
+            if (sliceActive)
+                key += ":s:" + (int)(rangeStart * 10000f) + ":" + (int)(rangeEnd * 10000f) + ":" +
+                    cellMinX + ":" + cellMaxX + ":" + cellMinY + ":" + cellMaxY;
+            return key;
         }
 
         static void TrimScanRunCache()
@@ -5218,12 +5531,15 @@ namespace GridSchematics
             if (index < 0 || index >= scanData.Samples.Length)
                 return 0f;
 
-            var sample = scanData.Samples[index];
             if (fillMode == GridSchematicsConfig.FillNone)
             {
                 return 0f;
             }
 
+            if (CurrentSliceActive)
+                return GetSliceScanValue(scanData, x, y, fillMode, index);
+
+            var sample = scanData.Samples[index];
             if (fillMode == GridSchematicsConfig.FillHits)
             {
                 return sample.HasHit ? 1f : 0f;
@@ -5240,6 +5556,116 @@ namespace GridSchematics
             }
 
             return sample.Thickness > 0 ? sample.Thickness / (float)Math.Max(1, scanData.MaxThickness) : 0f;
+        }
+
+        // Slice-mode value: exact interval reads clipped to the active depth range, normalized to the
+        // slice's own maxima so the full color ramp always spans the current slice.
+        static float GetSliceScanValue(RawRaycastScanData scanData, int x, int y, string fillMode, int index)
+        {
+            var profile = scanData.DepthProfile;
+            if (profile == null || index >= profile.CellCount)
+                return 0f;
+
+            if (fillMode == GridSchematicsConfig.FillHits)
+            {
+                return profile.HasSolidInRange(index, CurrentSliceRangeStart, CurrentSliceRangeEnd) ? 1f : 0f;
+            }
+
+            if (fillMode == GridSchematicsConfig.FillDensity)
+            {
+                int intervals = profile.GetIntervalCountInRange(index, CurrentSliceRangeStart, CurrentSliceRangeEnd);
+                return intervals > 0 ? intervals / (float)Math.Max(1, CurrentSliceMaxIntervals) : 0f;
+            }
+
+            if (fillMode == GridSchematicsConfig.FillVoids)
+            {
+                return GetSliceVoidDeficitValue(scanData, x, y, index);
+            }
+
+            float solid = profile.GetSolidInRange(index, CurrentSliceRangeStart, CurrentSliceRangeEnd);
+            return solid > 0f ? solid / CurrentSliceMaxSolid : 0f;
+        }
+
+        static float GetSliceVoidDeficitValue(RawRaycastScanData scanData, int x, int y, int index)
+        {
+            var profile = scanData.DepthProfile;
+            bool hasSolid = profile.HasSolidInRange(index, CurrentSliceRangeStart, CurrentSliceRangeEnd);
+            bool inSilhouette = hasSolid || IsLocallyEnclosedBySliceHits(scanData, x, y, 5);
+            if (!inSilhouette)
+                return 0f;
+
+            float density = GetLocalSliceDensity(scanData, x, y);
+            float voidValue = 1f - density;
+            if (!hasSolid)
+                voidValue *= 0.65f;
+
+            voidValue = Math.Max(0f, Math.Min(1f, voidValue));
+            return (float)Math.Pow(voidValue, 1.15);
+        }
+
+        static float GetLocalSliceDensity(RawRaycastScanData scanData, int x, int y)
+        {
+            var profile = scanData.DepthProfile;
+            int resolution = scanData.Resolution;
+            float total = 0f;
+            float weightTotal = 0f;
+
+            for (int dy = -1; dy <= 1; dy++)
+            {
+                int sy = y + dy;
+                if (sy < 0 || sy >= resolution)
+                    continue;
+
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    if (dx == 0 && dy == 0)
+                        continue;
+
+                    int sx = x + dx;
+                    if (sx < 0 || sx >= resolution)
+                        continue;
+
+                    int cell = sy * resolution + sx;
+                    if (cell >= profile.CellCount)
+                        continue;
+
+                    float weight = dx == 0 || dy == 0 ? 2f : 1f;
+                    int intervals = profile.GetIntervalCountInRange(cell, CurrentSliceRangeStart, CurrentSliceRangeEnd);
+                    total += (intervals > 0 ? intervals / (float)Math.Max(1, CurrentSliceMaxIntervals) : 0f) * weight;
+                    weightTotal += weight;
+                }
+            }
+
+            return weightTotal > 0f ? total / weightTotal : 0f;
+        }
+
+        static bool IsLocallyEnclosedBySliceHits(RawRaycastScanData scanData, int x, int y, int radius)
+        {
+            bool left = HasSliceHitInDirection(scanData, x, y, -1, 0, radius);
+            bool right = HasSliceHitInDirection(scanData, x, y, 1, 0, radius);
+            bool down = HasSliceHitInDirection(scanData, x, y, 0, -1, radius);
+            bool up = HasSliceHitInDirection(scanData, x, y, 0, 1, radius);
+
+            return (left && right) || (down && up);
+        }
+
+        static bool HasSliceHitInDirection(RawRaycastScanData scanData, int x, int y, int dx, int dy, int radius)
+        {
+            var profile = scanData.DepthProfile;
+            int resolution = scanData.Resolution;
+            for (int i = 1; i <= radius; i++)
+            {
+                int sx = x + dx * i;
+                int sy = y + dy * i;
+                if (sx < 0 || sy < 0 || sx >= resolution || sy >= resolution)
+                    return false;
+
+                int cell = sy * resolution + sx;
+                if (cell < profile.CellCount && profile.HasSolidInRange(cell, CurrentSliceRangeStart, CurrentSliceRangeEnd))
+                    return true;
+            }
+
+            return false;
         }
 
         static float GetDisplayScanValue(RawRaycastScanData scanData, int x, int y, string fillMode)

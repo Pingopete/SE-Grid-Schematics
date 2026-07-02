@@ -133,7 +133,7 @@ namespace GridSchematics
             return ShipGrid;
         }
 
-        public void UpdateCachedRaycastScans(IMyCubeGrid rootGrid, int resolution)
+        public void UpdateCachedRaycastScans(IMyCubeGrid rootGrid, int resolution, bool superSampling = true)
         {
             // QW8: take one world-entity snapshot and share it across all three view scans instead of
             // sweeping the world once per view.
@@ -142,17 +142,17 @@ namespace GridSchematics
             if (MyAPIGateway.Entities != null)
                 MyAPIGateway.Entities.GetEntities(entities, entity => entity is IMyCubeGrid);
 
-            UpdateCachedRaycastScan(rootGrid, ScanView.Top, resolution, entities);
-            UpdateCachedRaycastScan(rootGrid, ScanView.Side, resolution, entities);
-            UpdateCachedRaycastScan(rootGrid, ScanView.Front, resolution, entities);
+            UpdateCachedRaycastScan(rootGrid, ScanView.Top, resolution, entities, superSampling);
+            UpdateCachedRaycastScan(rootGrid, ScanView.Side, resolution, entities, superSampling);
+            UpdateCachedRaycastScan(rootGrid, ScanView.Front, resolution, entities, superSampling);
         }
 
         public RawRaycastScanData UpdateCachedRaycastScan(IMyCubeGrid rootGrid, ScanView view, int resolution)
         {
-            return UpdateCachedRaycastScan(rootGrid, view, resolution, null);
+            return UpdateCachedRaycastScan(rootGrid, view, resolution, null, true);
         }
 
-        public RawRaycastScanData UpdateCachedRaycastScan(IMyCubeGrid rootGrid, ScanView view, int resolution, HashSet<IMyEntity> providedEntities)
+        public RawRaycastScanData UpdateCachedRaycastScan(IMyCubeGrid rootGrid, ScanView view, int resolution, HashSet<IMyEntity> providedEntities, bool superSampling = true)
         {
             if (rootGrid == null)
                 return null;
@@ -164,18 +164,18 @@ namespace GridSchematics
             var projectedGrid = ShipGrid.BuildFromConstruct(ConstructGrids, BasisGrid ?? rootGrid, ReferenceRemoteControl, view);
             ProjectedGrids[view] = projectedGrid;
 
-            var data = BuildRawPhysicsRaycastScan(rootGrid, projectedGrid, view, resolution);
+            var data = BuildRawPhysicsRaycastScan(rootGrid, projectedGrid, view, resolution, superSampling);
             RaycastData[view] = data;
             MarkUpdated();
             return data;
         }
 
-        public IncrementalRaycastScanJob BeginIncrementalRaycastScans(IMyCubeGrid rootGrid, int resolution)
+        public IncrementalRaycastScanJob BeginIncrementalRaycastScans(IMyCubeGrid rootGrid, int resolution, bool superSampling = true)
         {
             if (resolution <= 0)
                 resolution = 256;
 
-            return new IncrementalRaycastScanJob(this, rootGrid, resolution);
+            return new IncrementalRaycastScanJob(this, rootGrid, resolution, superSampling);
         }
 
         void RefreshConstructGrids(IMyCubeGrid rootGrid)
@@ -745,7 +745,7 @@ namespace GridSchematics
             }
         }
 
-        RawRaycastScanData BuildRawPhysicsRaycastScan(IMyCubeGrid rootGrid, ShipGrid shipGrid, ScanView view, int resolution)
+        RawRaycastScanData BuildRawPhysicsRaycastScan(IMyCubeGrid rootGrid, ShipGrid shipGrid, ScanView view, int resolution, bool superSampling)
         {
             var data = new RawRaycastScanData(view, resolution);
             if (rootGrid == null || shipGrid == null || shipGrid.IsEmpty || shipGrid.Blocks.Count == 0 || MyAPIGateway.Physics == null)
@@ -768,7 +768,11 @@ namespace GridSchematics
             int raycastLayer = GetRaycastLayer();
             var hits = new List<IHitInfo>(16);
             var hitDistances = new List<float>(16);
-            var projectedOccupancy = BuildProjectedOccupancySet(hullScanGrid);
+            var intervals = new List<float>(16);
+            var intervalScratch = new List<float>(16);
+            var projectedOccupancy = ProjectedOccupancyMap.Build(hullScanGrid);
+            var profileBuilder = new ScanDepthProfile.Builder(resolution * resolution);
+            var frame = BuildRayBasisFrame(rootGrid, shipGrid);
             float sampleStepX = resolutionMax > 0 ? (sampleMaxX - sampleMinX) / resolutionMax : 0f;
             float sampleStepY = resolutionMax > 0 ? (sampleMaxY - sampleMinY) / resolutionMax : 0f;
 
@@ -781,13 +785,14 @@ namespace GridSchematics
                 {
                     float tx = x / (float)resolutionMax;
                     float sampleX = sampleMinX + tx * (sampleMaxX - sampleMinX);
-                    var sample = CastProjectedPhysicsRay(rootGrid, shipGrid, view, sampleX, sampleY, sampleStepX, sampleStepY, depthStart, depthEnd, raycastLayer, hits, hitDistances, projectedOccupancy);
+                    var sample = CastProjectedPhysicsRay(shipGrid, view, sampleX, sampleY, sampleStepX, sampleStepY, depthStart, depthEnd, raycastLayer, ref frame, hits, hitDistances, projectedOccupancy, superSampling, intervals, intervalScratch);
                     if (!sample.HasHit)
                         continue;
 
                     int index = y * resolution + x;
                     data.Samples[index] = sample;
                     data.HitSampleCount++;
+                    profileBuilder.AppendCell(index, intervals);
 
                     if (sample.HitCount > data.MaxHitCount)
                         data.MaxHitCount = sample.HitCount;
@@ -796,23 +801,10 @@ namespace GridSchematics
                 }
             }
 
+            data.DepthProfile = profileBuilder.Finish();
             data.IsReady = true;
             data.ScannedUtc = DateTime.UtcNow;
             return data;
-        }
-
-        HashSet<Vector2I> BuildProjectedOccupancySet(ShipGrid shipGrid)
-        {
-            var occupied = new HashSet<Vector2I>();
-            if (shipGrid == null || shipGrid.Blocks == null)
-                return occupied;
-
-            for (int i = 0; i < shipGrid.Blocks.Count; i++)
-            {
-                occupied.Add(shipGrid.Blocks[i].Projected);
-            }
-
-            return occupied;
         }
 
         int GetRaycastLayer()
@@ -830,10 +822,13 @@ namespace GridSchematics
             return 15;
         }
 
-        RawRaycastSample CastProjectedPhysicsRay(IMyCubeGrid rootGrid, ShipGrid shipGrid, ScanView view, float sampleX, float sampleY, float sampleStepX, float sampleStepY, float depthStart, float depthEnd, int raycastLayer, List<IHitInfo> hits, List<float> hitDistances, HashSet<Vector2I> projectedOccupancy)
+        RawRaycastSample CastProjectedPhysicsRay(ShipGrid shipGrid, ScanView view, float sampleX, float sampleY, float sampleStepX, float sampleStepY, float depthStart, float depthEnd, int raycastLayer, ref RayBasisFrame frame, List<IHitInfo> hits, List<float> hitDistances, ProjectedOccupancyMap projectedOccupancy, bool superSampling, List<float> intervals, List<float> intervalScratch)
         {
-            var sample = CastProjectedPhysicsRaySingle(rootGrid, shipGrid, view, sampleX, sampleY, depthStart, depthEnd, raycastLayer, hits, hitDistances);
-            if (!HasProjectedStructureNear(projectedOccupancy, sampleX, sampleY) || !ShouldRefineRaycastSample(sample))
+            var sample = CastProjectedPhysicsRaySingle(shipGrid, view, sampleX, sampleY, depthStart, depthEnd, raycastLayer, ref frame, hits, hitDistances, intervals);
+            // SUPER_SAMPLING ON = legacy refinement predicate (fidelity mode, default).
+            // OFF = recovery-only: extra rays are spent only when the center ray missed entirely.
+            bool wantRefine = superSampling ? ShouldRefineRaycastSample(sample) : !sample.HasHit;
+            if (!wantRefine || projectedOccupancy == null || !projectedOccupancy.IsNearStructure(sampleX, sampleY))
                 return sample;
 
             float offsetX = Math.Abs(sampleStepX) * 0.35f;
@@ -844,17 +839,34 @@ namespace GridSchematics
             var best = sample;
             if (offsetX > 0f)
             {
-                best = ChooseStrongerSample(best, CastProjectedPhysicsRaySingle(rootGrid, shipGrid, view, sampleX - offsetX, sampleY, depthStart, depthEnd, raycastLayer, hits, hitDistances));
-                best = ChooseStrongerSample(best, CastProjectedPhysicsRaySingle(rootGrid, shipGrid, view, sampleX + offsetX, sampleY, depthStart, depthEnd, raycastLayer, hits, hitDistances));
+                best = RefineSample(best, shipGrid, view, sampleX - offsetX, sampleY, depthStart, depthEnd, raycastLayer, ref frame, hits, hitDistances, intervals, intervalScratch);
+                best = RefineSample(best, shipGrid, view, sampleX + offsetX, sampleY, depthStart, depthEnd, raycastLayer, ref frame, hits, hitDistances, intervals, intervalScratch);
             }
 
             if (offsetY > 0f)
             {
-                best = ChooseStrongerSample(best, CastProjectedPhysicsRaySingle(rootGrid, shipGrid, view, sampleX, sampleY - offsetY, depthStart, depthEnd, raycastLayer, hits, hitDistances));
-                best = ChooseStrongerSample(best, CastProjectedPhysicsRaySingle(rootGrid, shipGrid, view, sampleX, sampleY + offsetY, depthStart, depthEnd, raycastLayer, hits, hitDistances));
+                best = RefineSample(best, shipGrid, view, sampleX, sampleY - offsetY, depthStart, depthEnd, raycastLayer, ref frame, hits, hitDistances, intervals, intervalScratch);
+                best = RefineSample(best, shipGrid, view, sampleX, sampleY + offsetY, depthStart, depthEnd, raycastLayer, ref frame, hits, hitDistances, intervals, intervalScratch);
             }
 
             return best;
+        }
+
+        // Casts one refinement ray; if it wins, its depth intervals replace the current best's.
+        RawRaycastSample RefineSample(RawRaycastSample best, ShipGrid shipGrid, ScanView view, float sampleX, float sampleY, float depthStart, float depthEnd, int raycastLayer, ref RayBasisFrame frame, List<IHitInfo> hits, List<float> hitDistances, List<float> intervals, List<float> intervalScratch)
+        {
+            var candidate = CastProjectedPhysicsRaySingle(shipGrid, view, sampleX, sampleY, depthStart, depthEnd, raycastLayer, ref frame, hits, hitDistances, intervalScratch);
+            if (!CandidateSampleWins(best, candidate))
+                return best;
+
+            if (intervals != null && intervalScratch != null)
+            {
+                intervals.Clear();
+                for (int i = 0; i < intervalScratch.Count; i++)
+                    intervals.Add(intervalScratch[i]);
+            }
+
+            return candidate;
         }
 
         bool ShouldRefineRaycastSample(RawRaycastSample sample)
@@ -865,43 +877,34 @@ namespace GridSchematics
             return sample.HitCount <= 1 || sample.Thickness <= 0.02f;
         }
 
-        bool HasProjectedStructureNear(HashSet<Vector2I> projectedOccupancy, float sampleX, float sampleY)
-        {
-            if (projectedOccupancy == null || projectedOccupancy.Count == 0)
-                return false;
-
-            int centerX = (int)Math.Floor(sampleX + 0.5f);
-            int centerY = (int)Math.Floor(sampleY + 0.5f);
-            for (int dy = -1; dy <= 1; dy++)
-            {
-                for (int dx = -1; dx <= 1; dx++)
-                {
-                    if (projectedOccupancy.Contains(new Vector2I(centerX + dx, centerY + dy)))
-                        return true;
-                }
-            }
-
-            return false;
-        }
-
-        RawRaycastSample ChooseStrongerSample(RawRaycastSample current, RawRaycastSample candidate)
+        static bool CandidateSampleWins(RawRaycastSample current, RawRaycastSample candidate)
         {
             if (!candidate.HasHit)
-                return current;
+                return false;
 
             if (!current.HasHit)
-                return candidate;
+                return true;
 
             if (candidate.HitCount > current.HitCount)
-                return candidate;
+                return true;
 
-            if (candidate.HitCount == current.HitCount && candidate.Thickness > current.Thickness)
-                return candidate;
-
-            return current;
+            return candidate.HitCount == current.HitCount && candidate.Thickness > current.Thickness;
         }
 
-        RawRaycastSample CastProjectedPhysicsRaySingle(IMyCubeGrid rootGrid, ShipGrid shipGrid, ScanView view, float sampleX, float sampleY, float depthStart, float depthEnd, int raycastLayer, List<IHitInfo> hits, List<float> hitDistances)
+        public RayBasisFrame BuildRayBasisFrame(IMyCubeGrid rootGrid, ShipGrid shipGrid)
+        {
+            MatrixD referenceMatrix = GetCurrentReferenceMatrix(rootGrid, shipGrid);
+            float gridSize = shipGrid != null && shipGrid.BasisGridSizeMeters > 0f ? shipGrid.BasisGridSizeMeters : 2.5f;
+            return new RayBasisFrame
+            {
+                Origin = referenceMatrix.Translation,
+                Right = referenceMatrix.Right * gridSize,
+                Up = referenceMatrix.Up * gridSize,
+                Forward = referenceMatrix.Forward * gridSize
+            };
+        }
+
+        RawRaycastSample CastProjectedPhysicsRaySingle(ShipGrid shipGrid, ScanView view, float sampleX, float sampleY, float depthStart, float depthEnd, int raycastLayer, ref RayBasisFrame frame, List<IHitInfo> hits, List<float> hitDistances, List<float> intervals)
         {
             var sample = new RawRaycastSample
             {
@@ -912,9 +915,11 @@ namespace GridSchematics
 
             hits.Clear();
             hitDistances.Clear();
+            if (intervals != null)
+                intervals.Clear();
 
-            var from = BasisToCurrentWorld(rootGrid, shipGrid, shipGrid.Unproject(sampleX, sampleY, depthStart, view));
-            var to = BasisToCurrentWorld(rootGrid, shipGrid, shipGrid.Unproject(sampleX, sampleY, depthEnd, view));
+            var from = frame.ToWorld(shipGrid.Unproject(sampleX, sampleY, depthStart, view));
+            var to = frame.ToWorld(shipGrid.Unproject(sampleX, sampleY, depthEnd, view));
 
             try
             {
@@ -967,20 +972,10 @@ namespace GridSchematics
             {
                 if (LastRaycastDiagnostics != null)
                     LastRaycastDiagnostics.RaysWithAcceptedHit++;
-                PopulateSegmentProfile(ref sample, hitDistances);
+                PopulateSegmentProfile(ref sample, hitDistances, intervals);
             }
 
             return sample;
-        }
-
-        Vector3D BasisToCurrentWorld(IMyCubeGrid rootGrid, ShipGrid shipGrid, Vector3D basisPosition)
-        {
-            MatrixD referenceMatrix = GetCurrentReferenceMatrix(rootGrid, shipGrid);
-            float gridSize = shipGrid != null && shipGrid.BasisGridSizeMeters > 0f ? shipGrid.BasisGridSizeMeters : 2.5f;
-            return referenceMatrix.Translation +
-                referenceMatrix.Right * (basisPosition.X * gridSize) +
-                referenceMatrix.Up * (basisPosition.Y * gridSize) +
-                referenceMatrix.Forward * (basisPosition.Z * gridSize);
         }
 
         MatrixD GetCurrentReferenceMatrix(IMyCubeGrid rootGrid, ShipGrid shipGrid)
@@ -1010,7 +1005,10 @@ namespace GridSchematics
             sampleMaxY = shipGrid.Max2D.Y + 0.5f;
         }
 
-        void PopulateSegmentProfile(ref RawRaycastSample sample, List<float> hitDistances)
+        // Collapses the sorted hit sequence into the sample summary AND (when a list is provided)
+        // emits the solid depth intervals — one (start, end) pair per contiguous segment — that feed
+        // the ScanDepthProfile slice store.
+        void PopulateSegmentProfile(ref RawRaycastSample sample, List<float> hitDistances, List<float> intervals)
         {
             if (hitDistances == null || hitDistances.Count == 0)
                 return;
@@ -1035,6 +1033,11 @@ namespace GridSchematics
                         largestSolid = solidSpan;
                     if (gap > largestVoid)
                         largestVoid = gap;
+                    if (intervals != null)
+                    {
+                        intervals.Add(segmentStart);
+                        intervals.Add(previous);
+                    }
                     segmentStart = current;
                 }
 
@@ -1044,6 +1047,11 @@ namespace GridSchematics
             float finalSolidSpan = previous - segmentStart;
             if (finalSolidSpan > largestSolid)
                 largestSolid = finalSolidSpan;
+            if (intervals != null)
+            {
+                intervals.Add(segmentStart);
+                intervals.Add(previous);
+            }
 
             float trailingVoid = Math.Max(0f, 1f - previous);
             if (trailingVoid > largestVoid)
@@ -1197,22 +1205,32 @@ namespace GridSchematics
             {
                 Preparing,
                 Scanning,
-                Composing,
                 Caching,
                 Complete
             }
 
+            // R6: the per-tick scan budget is time-boxed rather than a fixed ray count, and shared
+            // session-globally so two panels scanning at once cannot double the frame cost.
+            const double ScanTickBudgetMs = 1.25;
+            const int MinCellsPerTick = 256;
+            const int MaxCellsPerTick = 4096;
+            static readonly System.Diagnostics.Stopwatch ScanBudgetTimer = new System.Diagnostics.Stopwatch();
+            static int _globalBudgetTick = -1;
+            static int _globalCellsThisTick;
+
             readonly ScanCache _cache;
             readonly IMyCubeGrid _rootGrid;
             readonly int _resolution;
+            readonly bool _superSampling;
             readonly ScanView[] _views = new[] { ScanView.Top, ScanView.Side, ScanView.Front };
             readonly List<IHitInfo> _hits = new List<IHitInfo>(16);
             readonly List<float> _hitDistances = new List<float>(16);
+            readonly List<float> _intervals = new List<float>(16);
+            readonly List<float> _intervalScratch = new List<float>(16);
 
             JobStage _stage = JobStage.Preparing;
             int _viewIndex;
             int _sampleIndex;
-            int _composeIndex;
             int _axisTotalSamples;
             int _resolutionMax;
             int _raycastLayer;
@@ -1226,7 +1244,9 @@ namespace GridSchematics
             float _sampleStepY;
             ShipGrid _shipGrid;
             RawRaycastScanData _data;
-            HashSet<Vector2I> _projectedOccupancy;
+            ProjectedOccupancyMap _projectedOccupancy;
+            ScanDepthProfile.Builder _profileBuilder;
+            RayBasisFrame _rayFrame;
 
             public bool IsComplete
             {
@@ -1243,8 +1263,6 @@ namespace GridSchematics
                         return "Complete";
 
                     string axis = CurrentAxisLabel;
-                    if (_stage == JobStage.Composing)
-                        return "Composing " + axis;
                     if (_stage == JobStage.Scanning)
                         return "Scanning " + axis;
                     return "Preparing " + axis;
@@ -1274,8 +1292,6 @@ namespace GridSchematics
                         return 1f;
                     if (_axisTotalSamples <= 0)
                         return 0f;
-                    if (_stage == JobStage.Composing)
-                        return Clamp01(_composeIndex / (float)_axisTotalSamples);
                     if (_stage == JobStage.Scanning)
                         return Clamp01(_sampleIndex / (float)_axisTotalSamples);
                     return 0f;
@@ -1294,9 +1310,7 @@ namespace GridSchematics
                     float axisWeight = 0.32f;
                     float completed = _viewIndex * axisWeight;
                     if (_stage == JobStage.Scanning)
-                        completed += AxisProgress * axisWeight * 0.82f;
-                    else if (_stage == JobStage.Composing)
-                        completed += axisWeight * 0.82f + AxisProgress * axisWeight * 0.18f;
+                        completed += AxisProgress * axisWeight;
 
                     return Clamp01(completed);
                 }
@@ -1314,25 +1328,27 @@ namespace GridSchematics
                 }
             }
 
-            public IncrementalRaycastScanJob(ScanCache cache, IMyCubeGrid rootGrid, int resolution)
+            public IncrementalRaycastScanJob(ScanCache cache, IMyCubeGrid rootGrid, int resolution, bool superSampling)
             {
                 _cache = cache;
                 _rootGrid = rootGrid;
                 _resolution = Math.Max(1, resolution);
+                _superSampling = superSampling;
                 _axisTotalSamples = Math.Max(1, _resolution * _resolution);
             }
 
-            public bool Advance(int scanSampleBudget, int composeSampleBudget)
+            public bool Advance(int tick)
             {
                 if (IsComplete)
                     return false;
 
-                bool progressed = false;
-                if (scanSampleBudget < 1)
-                    scanSampleBudget = 1;
-                if (composeSampleBudget < 1)
-                    composeSampleBudget = 1;
+                if (tick != _globalBudgetTick)
+                {
+                    _globalBudgetTick = tick;
+                    _globalCellsThisTick = 0;
+                }
 
+                bool progressed = false;
                 while (!IsComplete)
                 {
                     if (_stage == JobStage.Preparing)
@@ -1346,13 +1362,7 @@ namespace GridSchematics
 
                     if (_stage == JobStage.Scanning)
                     {
-                        progressed = AdvanceScanning(scanSampleBudget) || progressed;
-                        return progressed;
-                    }
-
-                    if (_stage == JobStage.Composing)
-                    {
-                        progressed = AdvanceComposing(composeSampleBudget) || progressed;
+                        progressed = AdvanceScanning() || progressed;
                         return progressed;
                     }
 
@@ -1388,18 +1398,28 @@ namespace GridSchematics
                 _cache.ShipGrid = _shipGrid;
                 _data = new RawRaycastScanData(view, _resolution);
                 _sampleIndex = 0;
-                _composeIndex = 0;
                 _axisTotalSamples = Math.Max(1, _resolution * _resolution);
+                _profileBuilder = new ScanDepthProfile.Builder(_axisTotalSamples);
 
                 if (_shipGrid == null || _shipGrid.IsEmpty || _shipGrid.Blocks.Count == 0 || MyAPIGateway.Physics == null)
                 {
-                    _stage = JobStage.Composing;
+                    FinalizeAxis();
                     return;
                 }
 
-                var hullScanGrid = ShipGrid.BuildFromConstruct(_cache.HullScanTargetGrids, _cache.BasisGrid ?? _rootGrid, _cache.ReferenceRemoteControl, view);
-                if (hullScanGrid == null || hullScanGrid.IsEmpty)
+                // R3: the hull-target projection only differs from the construct projection when
+                // connector-attached grids are present — skip the second full block walk otherwise.
+                ShipGrid hullScanGrid;
+                if (_cache.HullScanTargetGrids.Count == _cache.ConstructGrids.Count)
+                {
                     hullScanGrid = _shipGrid;
+                }
+                else
+                {
+                    hullScanGrid = ShipGrid.BuildFromConstruct(_cache.HullScanTargetGrids, _cache.BasisGrid ?? _rootGrid, _cache.ReferenceRemoteControl, view);
+                    if (hullScanGrid == null || hullScanGrid.IsEmpty)
+                        hullScanGrid = _shipGrid;
+                }
 
                 _resolutionMax = Math.Max(1, _resolution - 1);
                 _cache.GetDefaultViewportSampleBounds(_shipGrid, out _sampleMinX, out _sampleMaxX, out _sampleMinY, out _sampleMaxY);
@@ -1408,13 +1428,13 @@ namespace GridSchematics
                 _data.SetSampleBounds(_sampleMinX, _sampleMaxX, _sampleMinY, _sampleMaxY, _depthStart, _depthEnd);
                 _cache.ResetRaycastDiagnostics(view);
                 _raycastLayer = _cache.GetRaycastLayer();
-                _projectedOccupancy = _cache.BuildProjectedOccupancySet(hullScanGrid);
+                _projectedOccupancy = ProjectedOccupancyMap.Build(hullScanGrid);
                 _sampleStepX = _resolutionMax > 0 ? (_sampleMaxX - _sampleMinX) / _resolutionMax : 0f;
                 _sampleStepY = _resolutionMax > 0 ? (_sampleMaxY - _sampleMinY) / _resolutionMax : 0f;
                 _stage = JobStage.Scanning;
             }
 
-            bool AdvanceScanning(int sampleBudget)
+            bool AdvanceScanning()
             {
                 if (_data == null)
                 {
@@ -1422,65 +1442,64 @@ namespace GridSchematics
                     return false;
                 }
 
+                // R4: resolve the reference matrix once per tick slice — the grid cannot move
+                // mid-tick on the sim thread — instead of twice per ray.
+                _rayFrame = _cache.BuildRayBasisFrame(_rootGrid, _shipGrid);
+                ScanBudgetTimer.Restart();
                 int processed = 0;
-                while (processed < sampleBudget && _sampleIndex < _axisTotalSamples)
+                while (_sampleIndex < _axisTotalSamples)
                 {
+                    if (_globalCellsThisTick >= MaxCellsPerTick)
+                        break;
+                    if (processed >= MinCellsPerTick && (processed & 31) == 0 &&
+                        ScanBudgetTimer.Elapsed.TotalMilliseconds > ScanTickBudgetMs)
+                        break;
+
                     int y = _sampleIndex / _resolution;
                     int x = _sampleIndex - y * _resolution;
                     float tx = _resolutionMax > 0 ? x / (float)_resolutionMax : 0f;
                     float ty = _resolutionMax > 0 ? y / (float)_resolutionMax : 0f;
                     float sampleX = _sampleMinX + tx * (_sampleMaxX - _sampleMinX);
                     float sampleY = _sampleMinY + ty * (_sampleMaxY - _sampleMinY);
-                    var sample = _cache.CastProjectedPhysicsRay(_rootGrid, _shipGrid, CurrentView, sampleX, sampleY, _sampleStepX, _sampleStepY, _depthStart, _depthEnd, _raycastLayer, _hits, _hitDistances, _projectedOccupancy);
-                    if (sample.HasHit)
-                        _data.Samples[_sampleIndex] = sample;
-
-                    _sampleIndex++;
-                    processed++;
-                }
-
-                if (_sampleIndex >= _axisTotalSamples)
-                    _stage = JobStage.Composing;
-
-                return processed > 0;
-            }
-
-            bool AdvanceComposing(int composeBudget)
-            {
-                if (_data == null)
-                {
-                    _stage = JobStage.Preparing;
-                    return false;
-                }
-
-                int processed = 0;
-                while (processed < composeBudget && _composeIndex < _axisTotalSamples)
-                {
-                    var sample = _data.Samples[_composeIndex];
+                    var sample = _cache.CastProjectedPhysicsRay(_shipGrid, CurrentView, sampleX, sampleY, _sampleStepX, _sampleStepY, _depthStart, _depthEnd, _raycastLayer, ref _rayFrame, _hits, _hitDistances, _projectedOccupancy, _superSampling, _intervals, _intervalScratch);
                     if (sample.HasHit)
                     {
+                        // R5: accumulate the view statistics inline (the old Composing stage was a
+                        // redundant second pass over every sample).
+                        _data.Samples[_sampleIndex] = sample;
                         _data.HitSampleCount++;
                         if (sample.HitCount > _data.MaxHitCount)
                             _data.MaxHitCount = sample.HitCount;
                         if (sample.Thickness > _data.MaxThickness)
                             _data.MaxThickness = sample.Thickness;
+                        _profileBuilder.AppendCell(_sampleIndex, _intervals);
                     }
 
-                    _composeIndex++;
+                    _sampleIndex++;
                     processed++;
+                    _globalCellsThisTick++;
                 }
 
-                if (_composeIndex >= _axisTotalSamples)
+                if (_sampleIndex >= _axisTotalSamples)
+                    FinalizeAxis();
+
+                return processed > 0;
+            }
+
+            void FinalizeAxis()
+            {
+                if (_data != null)
                 {
+                    _data.DepthProfile = _profileBuilder != null ? _profileBuilder.Finish() : null;
                     _data.IsReady = true;
                     _data.ScannedUtc = DateTime.UtcNow;
                     _cache.RaycastData[CurrentView] = _data;
                     _cache.MarkUpdated();
-                    _viewIndex++;
-                    _stage = _viewIndex >= _views.Length ? JobStage.Caching : JobStage.Preparing;
                 }
 
-                return processed > 0;
+                _profileBuilder = null;
+                _viewIndex++;
+                _stage = _viewIndex >= _views.Length ? JobStage.Caching : JobStage.Preparing;
             }
 
             void FinishCaching()
@@ -1590,6 +1609,204 @@ namespace GridSchematics
         }
     }
 
+    // Per-cell solid depth spans captured during the scan (normalized 0..1 along DepthStart..DepthEnd).
+    // This is the depth-resolved store that makes slice rendering possible: a slice is a masked read of
+    // these intervals, and the full-range read reproduces the legacy thickness/occupancy summary.
+    public class ScanDepthProfile
+    {
+        public int CellCount { get; private set; }
+        // PairOffsets[cell] = index of the cell's first interval pair; PairOffsets[CellCount] = total pairs.
+        public int[] PairOffsets { get; private set; }
+        // Flattened (start, end) pairs.
+        public float[] Bounds { get; private set; }
+
+        ScanDepthProfile(int cellCount, int[] pairOffsets, float[] bounds)
+        {
+            CellCount = cellCount;
+            PairOffsets = pairOffsets;
+            Bounds = bounds;
+        }
+
+        public int GetPairStart(int cell)
+        {
+            return PairOffsets[cell];
+        }
+
+        public int GetPairCount(int cell)
+        {
+            return PairOffsets[cell + 1] - PairOffsets[cell];
+        }
+
+        // Total solid depth within [rangeStart, rangeEnd], clipped exactly against the cell's intervals.
+        public float GetSolidInRange(int cell, float rangeStart, float rangeEnd)
+        {
+            int start = PairOffsets[cell];
+            int end = PairOffsets[cell + 1];
+            float total = 0f;
+            for (int p = start; p < end; p++)
+            {
+                float a = Bounds[p * 2];
+                float b = Bounds[p * 2 + 1];
+                float lo = a > rangeStart ? a : rangeStart;
+                float hi = b < rangeEnd ? b : rangeEnd;
+                if (hi > lo)
+                    total += hi - lo;
+            }
+            return total;
+        }
+
+        // Number of intervals overlapping [rangeStart, rangeEnd] (structural density within a slice).
+        public int GetIntervalCountInRange(int cell, float rangeStart, float rangeEnd)
+        {
+            int start = PairOffsets[cell];
+            int end = PairOffsets[cell + 1];
+            int count = 0;
+            for (int p = start; p < end; p++)
+            {
+                if (Bounds[p * 2 + 1] >= rangeStart && Bounds[p * 2] <= rangeEnd)
+                    count++;
+            }
+            return count;
+        }
+
+        public bool HasSolidInRange(int cell, float rangeStart, float rangeEnd)
+        {
+            int start = PairOffsets[cell];
+            int end = PairOffsets[cell + 1];
+            for (int p = start; p < end; p++)
+            {
+                if (Bounds[p * 2 + 1] >= rangeStart && Bounds[p * 2] <= rangeEnd)
+                    return true;
+            }
+            return false;
+        }
+
+        // Cells MUST be appended in ascending index order; skipped cells hold zero intervals.
+        public class Builder
+        {
+            readonly int _cellCount;
+            readonly int[] _pairOffsets;
+            readonly List<float> _bounds;
+            int _cursor = -1;
+
+            public Builder(int cellCount)
+            {
+                _cellCount = Math.Max(1, cellCount);
+                _pairOffsets = new int[_cellCount + 1];
+                _bounds = new List<float>(_cellCount / 2);
+            }
+
+            public bool AppendCell(int cellIndex, List<float> intervalPairs)
+            {
+                if (cellIndex <= _cursor || cellIndex >= _cellCount)
+                    return false;
+
+                int pairsSoFar = _bounds.Count >> 1;
+                for (int i = _cursor + 1; i <= cellIndex; i++)
+                    _pairOffsets[i] = pairsSoFar;
+
+                if (intervalPairs != null)
+                {
+                    for (int i = 0; i + 1 < intervalPairs.Count; i += 2)
+                    {
+                        _bounds.Add(intervalPairs[i]);
+                        _bounds.Add(intervalPairs[i + 1]);
+                    }
+                }
+
+                _cursor = cellIndex;
+                return true;
+            }
+
+            public ScanDepthProfile Finish()
+            {
+                int total = _bounds.Count >> 1;
+                for (int i = _cursor + 1; i <= _cellCount; i++)
+                    _pairOffsets[i] = total;
+                return new ScanDepthProfile(_cellCount, _pairOffsets, _bounds.ToArray());
+            }
+        }
+    }
+
+    // R2: pre-dilated occupancy bitmap. Replaces the per-cell 3x3 HashSet<Vector2I> probe
+    // (up to 9 hash lookups per ray cell) with a single array read.
+    public class ProjectedOccupancyMap
+    {
+        bool[] _cells;
+        int _minX;
+        int _minY;
+        int _width;
+        int _height;
+
+        public static ProjectedOccupancyMap Build(ShipGrid shipGrid)
+        {
+            var map = new ProjectedOccupancyMap();
+            if (shipGrid == null || shipGrid.IsEmpty || shipGrid.Blocks == null || shipGrid.Blocks.Count == 0)
+                return map;
+
+            map._minX = shipGrid.Min2D.X - 2;
+            map._minY = shipGrid.Min2D.Y - 2;
+            map._width = shipGrid.Max2D.X - shipGrid.Min2D.X + 5;
+            map._height = shipGrid.Max2D.Y - shipGrid.Min2D.Y + 5;
+            if (map._width <= 0 || map._height <= 0 || (long)map._width * map._height > 64_000_000L)
+            {
+                map._cells = null;
+                return map;
+            }
+
+            map._cells = new bool[map._width * map._height];
+            for (int i = 0; i < shipGrid.Blocks.Count; i++)
+            {
+                var projected = shipGrid.Blocks[i].Projected;
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    int y = projected.Y + dy - map._minY;
+                    if (y < 0 || y >= map._height)
+                        continue;
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        int x = projected.X + dx - map._minX;
+                        if (x < 0 || x >= map._width)
+                            continue;
+                        map._cells[y * map._width + x] = true;
+                    }
+                }
+            }
+
+            return map;
+        }
+
+        public bool IsNearStructure(float sampleX, float sampleY)
+        {
+            if (_cells == null)
+                return false;
+
+            int x = (int)Math.Floor(sampleX + 0.5f) - _minX;
+            int y = (int)Math.Floor(sampleY + 0.5f) - _minY;
+            if (x < 0 || y < 0 || x >= _width || y >= _height)
+                return false;
+
+            return _cells[y * _width + x];
+        }
+    }
+
+    // R4: reference matrix + grid size resolved once per tick slice instead of twice per ray.
+    public struct RayBasisFrame
+    {
+        public Vector3D Origin;
+        public Vector3D Right;
+        public Vector3D Up;
+        public Vector3D Forward;
+
+        public Vector3D ToWorld(Vector3D basisPosition)
+        {
+            return Origin +
+                Right * basisPosition.X +
+                Up * basisPosition.Y +
+                Forward * basisPosition.Z;
+        }
+    }
+
     public struct RawRaycastSample
     {
         public int HitCount;
@@ -1627,6 +1844,8 @@ namespace GridSchematics
         public float SampleMaxY { get; private set; }
         public float DepthStart { get; private set; }
         public float DepthEnd { get; private set; }
+        // Depth-resolved solid spans per cell; null on legacy data (pre-v12 loads).
+        public ScanDepthProfile DepthProfile { get; set; }
 
         public RawRaycastScanData(ScanView view, int resolution)
         {

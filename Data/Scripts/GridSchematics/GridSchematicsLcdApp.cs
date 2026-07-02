@@ -30,8 +30,8 @@ namespace GridSchematics
         const int CursorCalibrationClickCooldownTicks = 15;
         const int DuplicateMenuPressSuppressTicks = 18;
         const int MinimumLowLevelPanelResolutionAxis = 256;
-        const int IncrementalScanSamplesPerTick = 1152;
-        const int IncrementalCompositionSamplesPerTick = 8192;
+        // Scan pacing moved into IncrementalRaycastScanJob (R6): time-boxed per tick with a
+        // session-global cell budget shared across panels.
         const int ViewportMotionQualityHoldTicks = 10;
         static string CopiedPanelSettings = string.Empty;
         static string CopiedUiSettings = string.Empty;
@@ -527,6 +527,7 @@ namespace GridSchematics
                 return "BLUR=" + Ui.BlurScanRender + "\n" +
                     "PERFORMANCE_MODE=" + Config.PerformanceMode + "\n" +
                     "HIGH_RES_SCANNING=" + Config.HighResScanning + "\n" +
+                    "SUPER_SAMPLING=" + Config.SuperSampling + "\n" +
                     "HULL_SCAN_COLOR=" + GridSchematicsConfig.NormalizeHullScanColorScale(Config.HullScanColorScale) + "\n";
             }
 
@@ -755,7 +756,7 @@ namespace GridSchematics
             if (_activeScanJob == null)
                 return false;
 
-            bool changed = _activeScanJob.Advance(IncrementalScanSamplesPerTick, IncrementalCompositionSamplesPerTick);
+            bool changed = _activeScanJob.Advance(_currentTick);
             if (_activeScanJob.IsComplete)
             {
                 if (_activeScanIsStartup && HasReadyStartupScan())
@@ -773,6 +774,248 @@ namespace GridSchematics
             return changed;
         }
 
+        // ---- Hull-scan slice sliders (multiview) -------------------------------------------------
+        // Each viewport edge slider adjusts one axis of the panel's shared 3D slice box:
+        //   front:v -> Y   side:v -> Y   top:v -> Z   (vertical, right edge)
+        //   front:h -> X   side:h -> Z   top:h -> X   (horizontal, bottom edge)
+        // Grabbing near a handle drags that end; grabbing between the handles drags the whole band
+        // (preserving its width); values snap to whole basis cells.
+
+        string _activeSliceSliderRegionId = string.Empty;
+        int _sliceSliderDragMode;
+        float _sliceBandGrabDelta;
+        float _sliceBandWidth;
+        bool _sliceSliderDirty;
+
+        static int GetSliceAxisForRegion(string regionId)
+        {
+            if (regionId == UiLayout.SliceFrontVerticalId || regionId == UiLayout.SliceSideVerticalId)
+                return 1;
+            if (regionId == UiLayout.SliceTopVerticalId || regionId == UiLayout.SliceSideHorizontalId)
+                return 2;
+            return 0;
+        }
+
+        public bool TryGetSliceAxisBounds(int axis, out float boundsMin, out float boundsMax)
+        {
+            boundsMin = 0f;
+            boundsMax = 0f;
+            ShipGrid grid;
+            if (axis == 1)
+            {
+                grid = Ui.SegmentFrontGrid ?? Ui.SegmentLeftGrid;
+                if (grid == null || grid.IsEmpty)
+                    return false;
+                boundsMin = grid.Min2D.Y;
+                boundsMax = grid.Max2D.Y;
+                return true;
+            }
+
+            if (axis == 2)
+            {
+                grid = Ui.SegmentTopGrid;
+                if (grid != null && !grid.IsEmpty)
+                {
+                    boundsMin = grid.Min2D.Y;
+                    boundsMax = grid.Max2D.Y;
+                    return true;
+                }
+
+                grid = Ui.SegmentLeftGrid;
+                if (grid == null || grid.IsEmpty)
+                    return false;
+                boundsMin = grid.Min2D.X;
+                boundsMax = grid.Max2D.X;
+                return true;
+            }
+
+            grid = Ui.SegmentFrontGrid ?? Ui.SegmentTopGrid;
+            if (grid == null || grid.IsEmpty)
+                return false;
+            boundsMin = grid.Min2D.X;
+            boundsMax = grid.Max2D.X;
+            return true;
+        }
+
+        public void GetSliceAxisRange(int axis, float boundsMin, float boundsMax, out float min, out float max)
+        {
+            float storedMin;
+            float storedMax;
+            if (axis == 1)
+            {
+                storedMin = Ui.SliceYMin;
+                storedMax = Ui.SliceYMax;
+            }
+            else if (axis == 2)
+            {
+                storedMin = Ui.SliceZMin;
+                storedMax = Ui.SliceZMax;
+            }
+            else
+            {
+                storedMin = Ui.SliceXMin;
+                storedMax = Ui.SliceXMax;
+            }
+
+            min = storedMin > float.MinValue ? Math.Max(boundsMin, Math.Min(storedMin, boundsMax)) : boundsMin;
+            max = storedMax > float.MinValue ? Math.Max(boundsMin, Math.Min(storedMax, boundsMax)) : boundsMax;
+            if (max < min)
+                max = min;
+        }
+
+        void SetSliceAxisRange(int axis, float min, float max, float boundsMin, float boundsMax)
+        {
+            bool full = min <= boundsMin + 0.01f && max >= boundsMax - 0.01f;
+            float storeMin = full ? float.MinValue : min;
+            float storeMax = full ? float.MinValue : max;
+            if (axis == 1)
+            {
+                Ui.SliceYMin = storeMin;
+                Ui.SliceYMax = storeMax;
+            }
+            else if (axis == 2)
+            {
+                Ui.SliceZMin = storeMin;
+                Ui.SliceZMax = storeMax;
+            }
+            else
+            {
+                Ui.SliceXMin = storeMin;
+                Ui.SliceXMax = storeMax;
+            }
+        }
+
+        void ClearSliceSliderDrag()
+        {
+            _activeSliceSliderRegionId = string.Empty;
+            _sliceSliderDragMode = 0;
+        }
+
+        bool UpdateSliceSliderDrag()
+        {
+            if (!Ui.SegmentMode || TouchInput == null)
+            {
+                ClearSliceSliderDrag();
+                return false;
+            }
+
+            if (!TouchInput.IsPressed)
+            {
+                ClearSliceSliderDrag();
+                return false;
+            }
+
+            string hover = TouchInput.HoverRegionId ?? string.Empty;
+            if (TouchInput.JustPressed)
+            {
+                _activeSliceSliderRegionId = UiLayout.IsSliceSliderRegion(hover) ? hover : string.Empty;
+                _sliceSliderDragMode = 0;
+            }
+
+            if (string.IsNullOrEmpty(_activeSliceSliderRegionId) || !TouchInput.IsCursorOnScreen)
+                return false;
+
+            return TrySetSliceFromCursor(_activeSliceSliderRegionId);
+        }
+
+        bool TrySetSliceFromCursor(string regionId)
+        {
+            var surface = Surface;
+            if (surface == null)
+                return false;
+
+            ScreenZone frontZone;
+            ScreenZone leftZone;
+            ScreenZone topZone;
+            ScreenZone infoZone;
+            UiLayout.GetSegmentViewportZones((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, out frontZone, out leftZone, out topZone, out infoZone);
+
+            bool vertical = regionId.EndsWith(":v", StringComparison.Ordinal);
+            ScreenZone zone;
+            if (regionId == UiLayout.SliceFrontVerticalId || regionId == UiLayout.SliceFrontHorizontalId)
+                zone = frontZone;
+            else if (regionId == UiLayout.SliceSideVerticalId || regionId == UiLayout.SliceSideHorizontalId)
+                zone = leftZone;
+            else
+                zone = topZone;
+
+            var region = UiLayout.BuildSliceSliderRegion(zone, vertical, regionId);
+            int axis = GetSliceAxisForRegion(regionId);
+            float boundsMin;
+            float boundsMax;
+            if (!TryGetSliceAxisBounds(axis, out boundsMin, out boundsMax) || boundsMax <= boundsMin)
+                return false;
+
+            float trackStart;
+            float trackLength;
+            UiLayout.GetSliceSliderTrack(region, vertical, out trackStart, out trackLength);
+            float cursor = vertical ? TouchInput.CursorPosition.Y : TouchInput.CursorPosition.X;
+            float t = (cursor - trackStart) / trackLength;
+            if (t < 0f) t = 0f;
+            if (t > 1f) t = 1f;
+
+            // Vertical strips: top of the strip = the axis maximum (screen-up = +axis after the
+            // projection's Y flip). Horizontal strips: left = minimum.
+            float axisValue = vertical
+                ? boundsMax - t * (boundsMax - boundsMin)
+                : boundsMin + t * (boundsMax - boundsMin);
+
+            float curMin;
+            float curMax;
+            GetSliceAxisRange(axis, boundsMin, boundsMax, out curMin, out curMax);
+
+            if (_sliceSliderDragMode == 0)
+            {
+                float handleEps = Math.Max(0.75f, (boundsMax - boundsMin) * (8f / Math.Max(8f, trackLength)));
+                bool nearMin = Math.Abs(axisValue - curMin) <= handleEps;
+                bool nearMax = Math.Abs(axisValue - curMax) <= handleEps;
+                if (nearMin && nearMax)
+                    _sliceSliderDragMode = Math.Abs(axisValue - curMin) <= Math.Abs(axisValue - curMax) ? 1 : 2;
+                else if (nearMin)
+                    _sliceSliderDragMode = 1;
+                else if (nearMax)
+                    _sliceSliderDragMode = 2;
+                else if (axisValue > curMin && axisValue < curMax)
+                {
+                    _sliceSliderDragMode = 3;
+                    _sliceBandGrabDelta = axisValue - curMin;
+                    _sliceBandWidth = curMax - curMin;
+                }
+                else
+                {
+                    _sliceSliderDragMode = axisValue < curMin ? 1 : 2;
+                }
+            }
+
+            float newMin = curMin;
+            float newMax = curMax;
+            if (_sliceSliderDragMode == 1)
+            {
+                newMin = (float)Math.Round(Math.Min(Math.Max(axisValue, boundsMin), curMax));
+            }
+            else if (_sliceSliderDragMode == 2)
+            {
+                newMax = (float)Math.Round(Math.Max(Math.Min(axisValue, boundsMax), curMin));
+            }
+            else
+            {
+                float band = (float)Math.Round(axisValue - _sliceBandGrabDelta);
+                if (band < boundsMin)
+                    band = boundsMin;
+                if (band > boundsMax - _sliceBandWidth)
+                    band = boundsMax - _sliceBandWidth;
+                newMin = band;
+                newMax = band + _sliceBandWidth;
+            }
+
+            if (newMin == curMin && newMax == curMax)
+                return false;
+
+            SetSliceAxisRange(axis, newMin, newMax, boundsMin, boundsMax);
+            _sliceSliderDirty = true;
+            return true;
+        }
+
         void StartIncrementalRaycastScan(IMyCubeGrid grid, int resolution, bool startup, int tick)
         {
             if (grid == null || ConstructCache == null)
@@ -782,7 +1025,7 @@ namespace GridSchematics
                 return;
 
             CaptureScanCancelBackup();
-            _activeScanJob = ConstructCache.BeginIncrementalRaycastScans(grid, resolution);
+            _activeScanJob = ConstructCache.BeginIncrementalRaycastScans(grid, resolution, Config == null || Config.SuperSampling);
             _activeScanIsStartup = startup;
             ResetViewportCamera();
             _lastStartupScanAttemptTick = tick;
@@ -1295,6 +1538,18 @@ namespace GridSchematics
                 PersistPanelSettings();
             }
 
+            if (UpdateSliceSliderDrag())
+            {
+                changed = true;
+                actionChanged = true;
+                _renderDirty = true;
+            }
+            else if (TouchInput.JustReleased && _sliceSliderDirty)
+            {
+                _sliceSliderDirty = false;
+                PersistPanelSettings();
+            }
+
             if (TryResetSettingsItemFromSecondaryClick())
             {
                 changed = true;
@@ -1639,6 +1894,10 @@ namespace GridSchematics
                         Config.PerformanceMode = false;
                     PersistPanelSettings();
                     break;
+                case UiLayout.ToggleSuperSamplingId:
+                    Config.SuperSampling = !Config.SuperSampling;
+                    PersistPanelSettings();
+                    break;
                 case UiLayout.ToggleDebugModeId:
                     Config.ShowDebug = !Config.ShowDebug;
                     PersistPanelSettings();
@@ -1823,6 +2082,11 @@ namespace GridSchematics
                     break;
                 case UiLayout.SetHitsId:
                     Config.ToggleFillMode(GridSchematicsConfig.FillHits);
+                    PersistPanelSettings();
+                    break;
+                case UiLayout.SliceResetId:
+                    Ui.ResetSliceBox();
+                    _renderDirty = true;
                     PersistPanelSettings();
                     break;
                 case UiLayout.RunScanId:
@@ -5360,14 +5624,17 @@ namespace GridSchematics
 
             if (Ui.SegmentMode)
             {
-            zones = UiLayout.BuildZones((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y);
-                int gap = 1;
-                int leftWidth = zones.Center.Width / 2;
-                int topHeight = zones.Center.Height / 2;
-                var infoZone = new ScreenZone(ScreenZoneType.CenterViewport, zones.Center.X + leftWidth + gap, zones.Center.Y + topHeight + gap, Math.Max(1, zones.Center.Width - leftWidth - gap), Math.Max(1, zones.Center.Height - topHeight - gap));
-                var segmentControls = UiLayout.BuildSegmentScanControlRegions(infoZone);
+                ScreenZone segFrontZone;
+                ScreenZone segLeftZone;
+                ScreenZone segTopZone;
+                ScreenZone segInfoZone;
+                UiLayout.GetSegmentViewportZones((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, out segFrontZone, out segLeftZone, out segTopZone, out segInfoZone);
+                var segmentControls = UiLayout.BuildSegmentScanControlRegions(segInfoZone);
                 for (int i = 0; i < segmentControls.Length; i++)
                     TouchInput.AddHitRegion(segmentControls[i]);
+                var sliceSliders = UiLayout.BuildSegmentSliceSliderRegions(segFrontZone, segLeftZone, segTopZone);
+                for (int i = 0; i < sliceSliders.Length; i++)
+                    TouchInput.AddHitRegion(sliceSliders[i]);
             }
 
             var bottomRegions = UiLayout.BuildBottomSchematicRegions((int)surface.SurfaceSize.X, (int)surface.SurfaceSize.Y, IsThrustOverlayAvailable());
