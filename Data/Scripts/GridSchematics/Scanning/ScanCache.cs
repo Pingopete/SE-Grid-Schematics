@@ -1748,7 +1748,7 @@ namespace GridSchematics
             map._minY = shipGrid.Min2D.Y - 2;
             map._width = shipGrid.Max2D.X - shipGrid.Min2D.X + 5;
             map._height = shipGrid.Max2D.Y - shipGrid.Min2D.Y + 5;
-            if (map._width <= 0 || map._height <= 0 || (long)map._width * map._height > 64_000_000L)
+            if (map._width <= 0 || map._height <= 0 || (long)map._width * map._height > 64000000L)
             {
                 map._cells = null;
                 return map;
