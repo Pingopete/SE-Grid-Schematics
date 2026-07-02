@@ -27,7 +27,7 @@ namespace GridSchematics
     {
         const string PANEL_TAG = "[GRID_SCHEMATIC]";
         const int PANEL_SCAN_TICK_INTERVAL = 600;
-        const int PERSISTED_SCAN_VERSION = 10;
+        const int PERSISTED_SCAN_VERSION = 11;
         const bool PANEL_CURSOR_LIMIT_SAMPLE_RATE = false;
         const long PANEL_CURSOR_SAMPLE_INTERVAL_TICKS = 10000000L / 30L;
         const ushort PANEL_INTERACTION_INPUT_CHANNEL = 38473;

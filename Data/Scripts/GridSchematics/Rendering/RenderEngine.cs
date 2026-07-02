@@ -26,6 +26,17 @@ namespace GridSchematics
         const int SegmentRaycastRenderStep = 2;
         const string ConnectorSideIconTexture = "GridSchematics_Icon_ConnectorSide";
         const string SorterIconTexture = "GridSchematics_Icon_Sorter";
+        const string SorterValveIconTexture = "GridSchematics_Icon_SorterValve";
+        const string ConnectorFlangeSideIconTexture = "GridSchematics_Icon_ConnectorFlangeSide";
+        const string ConnectorFlangeFrontIconTexture = "GridSchematics_Icon_ConnectorFlangeFront";
+        const string ProductionIconTexture = "GridSchematics_Icon_Production";
+        const string GasTankIconTexture = "GridSchematics_Icon_GasTank";
+        const string StorageIconTexture = "GridSchematics_Icon_Storage";
+        const string VertRunDownIconTexture = "GridSchematics_Icon_VertRunDown";
+        const string VertRunUpIconTexture = "GridSchematics_Icon_VertRunUp";
+        const float ConveyorIconSuppressionRadius = 6f;
+        const float SmallConveyorDashLength = 2.5f;
+        const float SmallConveyorGapLength = 1.75f;
         const string CalibrationTextFontId = "GridSchematics_Bahnschrift";
         static string InfoDrawerTextFontId = "GridSchematics_Mozart";
         static float CurrentHullScanAlpha = 1f;
@@ -220,6 +231,7 @@ namespace GridSchematics
             public Vector2 Size;
             public Color Color;
             public string Texture;
+            public float Rotation;
         }
 
         class CachedScreenRects
@@ -1829,6 +1841,7 @@ namespace GridSchematics
             const int maxLineSegments = 5000;
             int drawnSegments = 0;
             var activeInventoryLineKeys = GetActiveInventoryConveyorLineKeys(topology);
+            var verticalMarkers = new List<Vector2>();
 
             if (topology.Lines != null)
             {
@@ -1852,6 +1865,15 @@ namespace GridSchematics
                         continue;
                     }
 
+                    Vector2 runMarker;
+                    if (TryGetCollapsedRunMarker(transform, shipGrid, line, out runMarker))
+                    {
+                        DrawConveyorIcon(frame, transform, shipGrid, ToBasisPoint(line.BasisPositions[0]), VertRunDownIconTexture, color, 8.5f);
+                        verticalMarkers.Add(runMarker);
+                        continue;
+                    }
+
+                    bool smallLine = IsSmallConveyorLineType(line.LineType);
                     for (int p = 1; p < line.BasisPositions.Count && drawnSegments < maxLineSegments; p++)
                     {
                         var start = ProjectBasisCellCenter(transform, shipGrid, line.BasisPositions[p - 1]);
@@ -1862,7 +1884,10 @@ namespace GridSchematics
                             continue;
                         }
 
-                        DrawScreenLine(frame, start, end, thickness, color);
+                        if (smallLine)
+                            DrawDashedScreenLine(frame, start, end, thickness, SmallConveyorDashLength, SmallConveyorGapLength, color);
+                        else
+                            DrawScreenLine(frame, start, end, thickness, color);
                         drawnSegments++;
                     }
                 }
@@ -1871,7 +1896,7 @@ namespace GridSchematics
             DrawCargoConveyorBlockPassThroughs(frame, transform, shipGrid, topology, filter);
             if (showAllConnections)
                 DrawCargoConveyorEndpointExtensions(frame, transform, shipGrid, topology, filter, true);
-            DrawCargoConveyorPorts(frame, transform, shipGrid, topology, filter, drawnSegments == 0);
+            DrawCargoConveyorPorts(frame, transform, shipGrid, topology, filter, drawnSegments == 0, verticalMarkers);
         }
 
         static void DrawCachedConveyorProjection(MySpriteDrawFrame frame, ProjectionTransform transform, ShipGrid shipGrid, ConveyorTopology topology, bool showAllConnections)
@@ -1893,7 +1918,7 @@ namespace GridSchematics
             for (int i = 0; i < cached.Points.Count; i++)
             {
                 var point = cached.Points[i];
-                AddCachedSprite(frame, new MySprite(SpriteType.TEXTURE, string.IsNullOrEmpty(point.Texture) ? "SquareSimple" : point.Texture, point.Center, point.Size, point.Color));
+                AddCachedSprite(frame, new MySprite(SpriteType.TEXTURE, string.IsNullOrEmpty(point.Texture) ? "SquareSimple" : point.Texture, point.Center, point.Size, point.Color, null, TextAlignment.CENTER, point.Rotation));
             }
         }
 
@@ -1922,6 +1947,7 @@ namespace GridSchematics
             const int maxLineSegments = 5000;
             int drawnSegments = 0;
             var activeInventoryLineKeys = GetActiveInventoryConveyorLineKeys(topology);
+            var verticalMarkers = new List<Vector2>();
 
             if (topology.Lines != null)
             {
@@ -1942,6 +1968,15 @@ namespace GridSchematics
                         continue;
                     }
 
+                    Vector2 runMarker;
+                    if (TryGetCollapsedRunMarker(transform, shipGrid, line, out runMarker))
+                    {
+                        AddCachedConveyorIcon(cached, transform, shipGrid, ToBasisPoint(line.BasisPositions[0]), VertRunDownIconTexture, color, 8.5f);
+                        verticalMarkers.Add(runMarker);
+                        continue;
+                    }
+
+                    bool smallLine = IsSmallConveyorLineType(line.LineType);
                     for (int p = 1; p < line.BasisPositions.Count && drawnSegments < maxLineSegments; p++)
                     {
                         var start = ProjectBasisCellCenter(transform, shipGrid, line.BasisPositions[p - 1]);
@@ -1952,7 +1987,7 @@ namespace GridSchematics
                             continue;
                         }
 
-                        cached.Lines.Add(new CachedScreenLine { Start = start, End = end, Thickness = 1f, Color = color });
+                        cached.Lines.Add(new CachedScreenLine { Start = start, End = end, Thickness = 1f, Color = color, Dashed = smallLine, DashLength = SmallConveyorDashLength, GapLength = SmallConveyorGapLength });
                         drawnSegments++;
                     }
                 }
@@ -1961,7 +1996,7 @@ namespace GridSchematics
             AddCachedConveyorBlockPassThroughs(cached, transform, shipGrid, topology);
             if (showAllConnections)
                 AddCachedConveyorEndpointExtensions(cached, transform, shipGrid, topology, true);
-            AddCachedConveyorPorts(cached, transform, shipGrid, topology, drawnSegments == 0);
+            AddCachedConveyorPorts(cached, transform, shipGrid, topology, drawnSegments == 0, verticalMarkers);
             return cached;
         }
 
@@ -2498,7 +2533,7 @@ namespace GridSchematics
             }
         }
 
-        static void AddCachedConveyorPorts(CachedConveyorProjection cached, ProjectionTransform transform, ShipGrid shipGrid, ConveyorTopology topology, bool prominent)
+        static void AddCachedConveyorPorts(CachedConveyorProjection cached, ProjectionTransform transform, ShipGrid shipGrid, ConveyorTopology topology, bool prominent, List<Vector2> verticalMarkers)
         {
             if (cached == null || topology == null || topology.Ports == null || topology.Nodes == null)
                 return;
@@ -2513,7 +2548,8 @@ namespace GridSchematics
 
             int maxPorts = Math.Min(topology.Ports.Count, 1200);
             float size = prominent ? 6.5f : 4.75f;
-            var drawnSorterNodes = new HashSet<long>();
+            float iconSize = prominent ? 11f : 8.5f;
+            var drawnIconNodes = new HashSet<long>();
             for (int i = 0; i < maxPorts; i++)
             {
                 var port = topology.Ports[i];
@@ -2521,20 +2557,33 @@ namespace GridSchematics
                     continue;
 
                 ConveyorNode node;
-                var basisPosition = nodesById.TryGetValue(port.NodeId, out node)
-                    ? node.BasisPosition + port.DirectionVector
-                    : port.BasisPosition;
-                if (IsConveyorSorterNode(node))
+                nodesById.TryGetValue(port.NodeId, out node);
+                if (node != null && node.Role != ConveyorNodeRole.Generic)
                 {
-                    if (drawnSorterNodes.Add(node.BlockEntityId))
-                        AddCachedConveyorIcon(cached, transform, shipGrid, node.BasisCenter, SorterIconTexture, ApplyConveyorHue(new Color(20, 220, 255, PipelineAlpha)), prominent ? 11f : 8.5f);
+                    if (drawnIconNodes.Add(node.BlockEntityId))
+                    {
+                        var iconCenter = SnapPoint(ProjectBasisPoint(transform, shipGrid, node.BasisCenter));
+                        if (!IsNearVerticalMarker(verticalMarkers, iconCenter))
+                        {
+                            float rotation;
+                            string icon = ResolveConveyorNodeIcon(transform, shipGrid, node, out rotation);
+                            var iconColor = node.IsWorking
+                                ? ApplyConveyorHue(new Color(20, 220, 255, PipelineAlpha))
+                                : new Color(255, 95, 55, PipelineAlpha);
+                            AddCachedConveyorIcon(cached, transform, shipGrid, node.BasisCenter, icon, iconColor, iconSize, rotation);
+                        }
+                    }
                     continue;
                 }
+
+                var portPoint = SnapPoint(ProjectBasisCellCenter(transform, shipGrid, port.BasisPosition));
+                if (IsNearVerticalMarker(verticalMarkers, portPoint))
+                    continue;
 
                 var color = port.IsConnected
                     ? ApplyConveyorHue(new Color(20, 220, 255, PipelineAlpha))
                     : ApplyConveyorHue(new Color(40, 105, 255, PipelineAlpha));
-                AddCachedConveyorPoint(cached, transform, shipGrid, basisPosition, color, size);
+                AddCachedConveyorPoint(cached, transform, shipGrid, port.BasisPosition, color, size);
             }
         }
 
@@ -2553,7 +2602,7 @@ namespace GridSchematics
             });
         }
 
-        static void AddCachedConveyorIcon(CachedConveyorProjection cached, ProjectionTransform transform, ShipGrid shipGrid, Vector3D basisPosition, string texture, Color color, float size)
+        static void AddCachedConveyorIcon(CachedConveyorProjection cached, ProjectionTransform transform, ShipGrid shipGrid, Vector3D basisPosition, string texture, Color color, float size, float rotation = 0f)
         {
             if (cached == null)
                 return;
@@ -2565,7 +2614,8 @@ namespace GridSchematics
                 Center = point,
                 Size = new Vector2(pixelSize, pixelSize),
                 Color = color,
-                Texture = texture
+                Texture = texture,
+                Rotation = rotation
             });
         }
 
@@ -2827,7 +2877,7 @@ namespace GridSchematics
             return 0;
         }
 
-        static void DrawCargoConveyorPorts(MySpriteDrawFrame frame, ProjectionTransform transform, ShipGrid shipGrid, ConveyorTopology topology, CargoConveyorFilter filter, bool prominent)
+        static void DrawCargoConveyorPorts(MySpriteDrawFrame frame, ProjectionTransform transform, ShipGrid shipGrid, ConveyorTopology topology, CargoConveyorFilter filter, bool prominent, List<Vector2> verticalMarkers)
         {
             if (topology == null || topology.Ports == null || topology.Nodes == null)
                 return;
@@ -2842,7 +2892,8 @@ namespace GridSchematics
 
             int maxPorts = Math.Min(topology.Ports.Count, 1200);
             float size = prominent ? 6.5f : 4.75f;
-            var drawnSorterNodes = new HashSet<long>();
+            float iconSize = prominent ? 11f : 8.5f;
+            var drawnIconNodes = new HashSet<long>();
             for (int i = 0; i < maxPorts; i++)
             {
                 var port = topology.Ports[i];
@@ -2852,29 +2903,150 @@ namespace GridSchematics
                     continue;
 
                 ConveyorNode node;
-                var basisPosition = nodesById.TryGetValue(port.NodeId, out node)
-                    ? node.BasisPosition + port.DirectionVector
-                    : port.BasisPosition;
-                if (IsConveyorSorterNode(node))
+                nodesById.TryGetValue(port.NodeId, out node);
+                if (node != null && node.Role != ConveyorNodeRole.Generic)
                 {
-                    if (drawnSorterNodes.Add(node.BlockEntityId))
-                        DrawConveyorIcon(frame, transform, shipGrid, node.BasisCenter, SorterIconTexture, ApplyConveyorHue(new Color(20, 220, 255, PipelineAlpha)), prominent ? 11f : 8.5f);
+                    if (drawnIconNodes.Add(node.BlockEntityId))
+                    {
+                        var iconCenter = SnapPoint(ProjectBasisPoint(transform, shipGrid, node.BasisCenter));
+                        if (!IsNearVerticalMarker(verticalMarkers, iconCenter))
+                        {
+                            float rotation;
+                            string icon = ResolveConveyorNodeIcon(transform, shipGrid, node, out rotation);
+                            var iconColor = node.IsWorking
+                                ? ApplyConveyorHue(new Color(20, 220, 255, PipelineAlpha))
+                                : new Color(255, 95, 55, PipelineAlpha);
+                            DrawConveyorIcon(frame, transform, shipGrid, node.BasisCenter, icon, iconColor, iconSize, rotation);
+                        }
+                    }
                     continue;
                 }
+
+                var portPoint = SnapPoint(ProjectBasisCellCenter(transform, shipGrid, port.BasisPosition));
+                if (IsNearVerticalMarker(verticalMarkers, portPoint))
+                    continue;
 
                 var color = port.IsConnected
                     ? ApplyConveyorHue(new Color(20, 220, 255, PipelineAlpha))
                     : ApplyConveyorHue(new Color(40, 105, 255, PipelineAlpha));
-                DrawConveyorPoint(frame, transform, shipGrid, basisPosition, color, size);
+                DrawConveyorPoint(frame, transform, shipGrid, port.BasisPosition, color, size);
             }
         }
 
-        static bool IsConveyorSorterNode(ConveyorNode node)
+        // Maps a node's role to its plant-map icon. Directional roles (sorter = check
+        // valve, connector = flange) rotate with the block; when the block faces
+        // into/out of the screen they fall back to the circled dot/X convention.
+        static string ResolveConveyorNodeIcon(ProjectionTransform transform, ShipGrid shipGrid, ConveyorNode node, out float rotation)
         {
-            if (node == null || string.IsNullOrEmpty(node.BlockType))
+            rotation = 0f;
+            switch (node.Role)
+            {
+                case ConveyorNodeRole.Storage:
+                    return StorageIconTexture;
+                case ConveyorNodeRole.GasTank:
+                    return GasTankIconTexture;
+                case ConveyorNodeRole.Production:
+                    return ProductionIconTexture;
+                case ConveyorNodeRole.Connector:
+                case ConveyorNodeRole.Sorter:
+                {
+                    float planarLength;
+                    float angle = ComputeBasisDirectionRotation(transform, shipGrid, node.BasisCenter, node.BasisOrientation, out planarLength);
+                    bool faceOn = planarLength < 0.45f;
+                    if (node.Role == ConveyorNodeRole.Connector)
+                    {
+                        if (faceOn)
+                            return ConnectorFlangeFrontIconTexture;
+                        rotation = angle;
+                        return ConnectorFlangeSideIconTexture;
+                    }
+
+                    if (faceOn)
+                        return IsBasisDirectionTowardViewer(shipGrid.ProjectionView, node.BasisOrientation)
+                            ? VertRunUpIconTexture
+                            : VertRunDownIconTexture;
+                    rotation = angle;
+                    return SorterValveIconTexture;
+                }
+                default:
+                    return StorageIconTexture;
+            }
+        }
+
+        // Projects a basis-space direction through the full view pipeline (projection
+        // axis drop, Y flip, view rotation) and returns the on-screen angle for sprite
+        // rotation. planarLength is the in-plane fraction of the unit direction (0 =
+        // pointing straight into/out of the screen).
+        static float ComputeBasisDirectionRotation(ProjectionTransform transform, ShipGrid shipGrid, Vector3D basisCenter, Vector3D basisDirection, out float planarLength)
+        {
+            var p0 = ProjectBasisPoint(transform, shipGrid, basisCenter);
+            var p1 = ProjectBasisPoint(transform, shipGrid, basisCenter + basisDirection);
+            var delta = p1 - p0;
+            float cell = Math.Max(0.001f, transform.CellSize);
+            planarLength = delta.Length() / cell;
+            if (planarLength < 0.001f)
+                return 0f;
+
+            return (float)Math.Atan2(delta.Y, delta.X);
+        }
+
+        static bool IsBasisDirectionTowardViewer(ScanView view, Vector3D basisDirection)
+        {
+            switch (view)
+            {
+                case ScanView.Front:
+                    return basisDirection.Z > 0.0;
+                case ScanView.Side:
+                    return basisDirection.X > 0.0;
+                default:
+                    return basisDirection.Y > 0.0;
+            }
+        }
+
+        static bool IsSmallConveyorLineType(string lineType)
+        {
+            return lineType != null && lineType.IndexOf("SMALL", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // A multi-cell line run whose waypoints all land on (nearly) the same screen
+        // point is a shaft running perpendicular to the view. Instead of a stack of
+        // point sprites it gets a single circled-X "goes through this deck" marker.
+        static bool TryGetCollapsedRunMarker(ProjectionTransform transform, ShipGrid shipGrid, ConveyorLineRun line, out Vector2 marker)
+        {
+            marker = Vector2.Zero;
+            if (line.BasisPositions.Count < 3)
                 return false;
 
-            return node.BlockType.IndexOf("Sorter", StringComparison.OrdinalIgnoreCase) >= 0;
+            var first = ProjectBasisCellCenter(transform, shipGrid, line.BasisPositions[0]);
+            for (int p = 1; p < line.BasisPositions.Count; p++)
+            {
+                var point = ProjectBasisCellCenter(transform, shipGrid, line.BasisPositions[p]);
+                if ((point - first).LengthSquared() > 2.25f)
+                    return false;
+            }
+
+            marker = SnapPoint(first);
+            return true;
+        }
+
+        static bool IsNearVerticalMarker(List<Vector2> verticalMarkers, Vector2 point)
+        {
+            if (verticalMarkers == null)
+                return false;
+
+            float radiusSq = ConveyorIconSuppressionRadius * ConveyorIconSuppressionRadius;
+            for (int i = 0; i < verticalMarkers.Count; i++)
+            {
+                if ((verticalMarkers[i] - point).LengthSquared() <= radiusSq)
+                    return true;
+            }
+
+            return false;
+        }
+
+        static Vector3D ToBasisPoint(Vector3I basisPosition)
+        {
+            return new Vector3D(basisPosition.X, basisPosition.Y, basisPosition.Z);
         }
 
         static void DrawConveyorPoint(MySpriteDrawFrame frame, ProjectionTransform transform, ShipGrid shipGrid, Vector3I basisPosition, Color color, float size)
@@ -2889,7 +3061,7 @@ namespace GridSchematics
                 color));
         }
 
-        static void DrawConveyorIcon(MySpriteDrawFrame frame, ProjectionTransform transform, ShipGrid shipGrid, Vector3D basisPosition, string texture, Color color, float size)
+        static void DrawConveyorIcon(MySpriteDrawFrame frame, ProjectionTransform transform, ShipGrid shipGrid, Vector3D basisPosition, string texture, Color color, float size, float rotation = 0f)
         {
             var point = SnapPoint(ProjectBasisPoint(transform, shipGrid, basisPosition));
             float pixelSize = SnapPixelSize(size);
@@ -2898,7 +3070,10 @@ namespace GridSchematics
                 texture,
                 point,
                 new Vector2(pixelSize, pixelSize),
-                color));
+                color,
+                null,
+                TextAlignment.CENTER,
+                rotation));
         }
 
         static Vector2 ProjectBasisCellCenter(ProjectionTransform transform, ShipGrid shipGrid, Vector3I basisPosition)
@@ -4756,16 +4931,21 @@ namespace GridSchematics
                 return;
 
             int resolution = scanData.Resolution;
-            int step = Math.Max(1, renderStep);
+            int baseStep = Math.Max(1, renderStep);
             float spanX = Math.Max(0.001f, scanData.SampleMaxX - scanData.SampleMinX);
             float spanY = Math.Max(0.001f, scanData.SampleMaxY - scanData.SampleMinY);
             float baseSampleWidth = spanX / (float)resolution * transform.CellSize;
             float baseSampleHeight = spanY / (float)resolution * transform.CellSize;
-            step = Math.Max(step, GetScreenResolvedScanStep(baseSampleWidth, baseSampleHeight));
-            float tileOverlap = step > 1 ? 0.05f : 0.75f;
+            // Per-axis level-of-detail: coarsen each axis by its OWN on-screen sample size. When a view's
+            // projected region is elongated (e.g. Front/Side of a long ship) only one axis has sub-pixel
+            // cells; the previous single Math.Min-based step coarsened BOTH axes, pixelating the image until
+            // you zoomed in. Independent stepX/stepY keeps full resolution on the axis that has screen space.
+            int stepX = Math.Max(baseStep, GetScreenResolvedScanStep(baseSampleWidth));
+            int stepY = Math.Max(baseStep, GetScreenResolvedScanStep(baseSampleHeight));
+            float tileOverlap = (stepX > 1 || stepY > 1) ? 0.05f : 0.75f;
             float sampleWidth = baseSampleWidth;
-            float sampleHeight = baseSampleHeight * step;
-            var cachedRuns = GetOrBuildScanRuns(scanData, fillMode, blurScan, step);
+            float sampleHeight = baseSampleHeight * stepY;
+            var cachedRuns = GetOrBuildScanRuns(scanData, fillMode, blurScan, stepX, stepY);
             if (cachedRuns == null || cachedRuns.Runs == null || cachedRuns.Runs.Count == 0)
                 return;
 
@@ -4773,13 +4953,13 @@ namespace GridSchematics
             {
                 CurrentPerfCachedSpriteCount++;
                 var run = cachedRuns.Runs[i];
-                DrawScanRun(frame, zone, transform, shipGrid, scanData, resolution, step, run.Y, run.StartX, run.EndX, run.Shade, sampleWidth, sampleHeight, tileOverlap, fillMode);
+                DrawScanRun(frame, zone, transform, shipGrid, scanData, resolution, stepX, stepY, run.Y, run.StartX, run.EndX, run.Shade, sampleWidth, sampleHeight, tileOverlap, fillMode);
             }
         }
 
-        static CachedScanRuns GetOrBuildScanRuns(RawRaycastScanData scanData, string fillMode, bool blurScan, int step)
+        static CachedScanRuns GetOrBuildScanRuns(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY)
         {
-            string key = BuildScanRunCacheKey(scanData, fillMode, blurScan, step);
+            string key = BuildScanRunCacheKey(scanData, fillMode, blurScan, stepX, stepY);
             CachedScanRuns cached;
             if (ScanRunCache.TryGetValue(key, out cached) && cached != null)
             {
@@ -4789,28 +4969,28 @@ namespace GridSchematics
             }
             TrackCacheMiss();
 
-            cached = BuildScanRuns(scanData, fillMode, blurScan, step);
+            cached = BuildScanRuns(scanData, fillMode, blurScan, stepX, stepY);
             cached.LastUsed = ++CacheUseCounter;
             ScanRunCache[key] = cached;
             TrimScanRunCache();
             return cached;
         }
 
-        static CachedScanRuns BuildScanRuns(RawRaycastScanData scanData, string fillMode, bool blurScan, int step)
+        static CachedScanRuns BuildScanRuns(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY)
         {
             var cached = new CachedScanRuns();
             int resolution = scanData.Resolution;
-            for (int y = 0; y < resolution; y += step)
+            for (int y = 0; y < resolution; y += stepY)
             {
                 int runStart = -1;
                 int runShade = 0;
 
-                for (int x = 0; x <= resolution; x += step)
+                for (int x = 0; x <= resolution; x += stepX)
                 {
                     int shade = 0;
                     if (x < resolution)
                     {
-                        float value = GetScanRunValue(scanData, x, y, step, fillMode, blurScan);
+                        float value = GetScanRunValue(scanData, x, y, stepX, stepY, fillMode, blurScan);
                         if (value > 0.01f)
                         {
                             value = Math.Min(1f, value);
@@ -4851,13 +5031,12 @@ namespace GridSchematics
             return cached;
         }
 
-        static int GetScreenResolvedScanStep(float sampleWidth, float sampleHeight)
+        static int GetScreenResolvedScanStep(float sampleSize)
         {
-            float minSample = Math.Min(sampleWidth, sampleHeight);
-            if (minSample >= 1f)
+            if (sampleSize >= 1f)
                 return 1;
 
-            int step = (int)Math.Ceiling(1f / Math.Max(0.05f, minSample));
+            int step = (int)Math.Ceiling(1f / Math.Max(0.05f, sampleSize));
             if (step < 1)
                 step = 1;
             if (step > 4)
@@ -4865,16 +5044,16 @@ namespace GridSchematics
             return step;
         }
 
-        static float GetScanRunValue(RawRaycastScanData scanData, int x, int y, int step, string fillMode, bool blurScan)
+        static float GetScanRunValue(RawRaycastScanData scanData, int x, int y, int stepX, int stepY, string fillMode, bool blurScan)
         {
-            if (step <= 1)
+            if (stepX <= 1 && stepY <= 1)
                 return blurScan ? GetBlurredScanValue(scanData, x, y, fillMode) : GetDisplayScanValue(scanData, x, y, fillMode);
 
             int resolution = scanData.Resolution;
             float total = 0f;
             int count = 0;
-            int yEnd = Math.Min(resolution, y + step);
-            int xEnd = Math.Min(resolution, x + step);
+            int yEnd = Math.Min(resolution, y + Math.Max(1, stepY));
+            int xEnd = Math.Min(resolution, x + Math.Max(1, stepX));
             for (int sy = y; sy < yEnd; sy++)
             {
                 for (int sx = x; sx < xEnd; sx++)
@@ -4887,7 +5066,7 @@ namespace GridSchematics
             return count > 0 ? total / count : 0f;
         }
 
-        static string BuildScanRunCacheKey(RawRaycastScanData scanData, string fillMode, bool blurScan, int step)
+        static string BuildScanRunCacheKey(RawRaycastScanData scanData, string fillMode, bool blurScan, int stepX, int stepY)
         {
             int maxThicknessBucket = (int)(scanData.MaxThickness * 1000f);
             return scanData.GetHashCode() + ":" +
@@ -4903,7 +5082,8 @@ namespace GridSchematics
                 maxThicknessBucket + ":" +
                 fillMode + ":" +
                 blurScan + ":" +
-                step;
+                stepX + ":" +
+                stepY;
         }
 
         static void TrimScanRunCache()
@@ -4926,14 +5106,14 @@ namespace GridSchematics
                 ScanRunCache.Remove(oldestKey);
         }
 
-        static void DrawScanRun(MySpriteDrawFrame frame, ScreenZone zone, ProjectionTransform transform, ShipGrid shipGrid, RawRaycastScanData scanData, int resolution, int step, int y, int startX, int endX, int shade, float sampleWidth, float sampleHeight, float tileOverlap, string fillMode)
+        static void DrawScanRun(MySpriteDrawFrame frame, ScreenZone zone, ProjectionTransform transform, ShipGrid shipGrid, RawRaycastScanData scanData, int resolution, int stepX, int stepY, int y, int startX, int endX, int shade, float sampleWidth, float sampleHeight, float tileOverlap, string fillMode)
         {
             int runWidthCells = Math.Max(1, endX - startX);
             float spanX = Math.Max(0.001f, scanData.SampleMaxX - scanData.SampleMinX);
             float spanY = Math.Max(0.001f, scanData.SampleMaxY - scanData.SampleMinY);
-            float stepOffset = Math.Max(1, step) - 1;
-            float sampleIndexX = startX - stepOffset * 0.5f + runWidthCells * 0.5f;
-            float sampleIndexY = y + (step * 0.5f - stepOffset * 0.5f);
+            float stepOffsetX = Math.Max(1, stepX) - 1;
+            float sampleIndexX = startX - stepOffsetX * 0.5f + runWidthCells * 0.5f;
+            float sampleIndexY = y + 0.5f;
             float sampleX = scanData.SampleMinX + sampleIndexX / Math.Max(1f, resolution) * spanX;
             float sampleY = scanData.SampleMinY + sampleIndexY / Math.Max(1f, resolution) * spanY;
             float localX = sampleX - shipGrid.Min2D.X + 0.5f;
@@ -4966,7 +5146,7 @@ namespace GridSchematics
             if (CurrentHullScanColorScale == GridSchematicsConfig.HullColorThermal)
                 return WithAlpha(GetThermalScanColor(t), alpha);
             if (CurrentHullScanColorScale == GridSchematicsConfig.HullColorUi)
-                return WithAlpha(LerpColor(UiMenuButtonFill, UiSelected, t), alpha);
+                return WithAlpha(LerpColor(ResolveStorageSchematicColor(), ResolveSecondarySchematicColor(), t), alpha);
             return new Color(shade, shade, shade, alpha);
         }
 

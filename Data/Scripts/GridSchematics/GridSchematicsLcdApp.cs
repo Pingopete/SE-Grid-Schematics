@@ -482,9 +482,8 @@ namespace GridSchematics
                 Config.ShowInfoPanel = Ui.ShowInfoPanel;
             Config.OverlayMode = FormatOverlayMode(Ui.ActiveOverlay);
 
-            var text = Config.ToIniText();
-            _lastCustomData = text;
-            OwnerBlock.CustomData = text;
+            // Panel settings are intentionally NOT written back to block CustomData — that field is
+            // reserved for the user (e.g. Programmable Block source). Settings are kept in-memory only.
         }
 
         public void SetMouseControlEnabledFromConstruct(bool enabled, bool persist)
@@ -726,11 +725,8 @@ namespace GridSchematics
 
         void EnsurePanelDefaults()
         {
-            if (string.IsNullOrWhiteSpace(OwnerBlock.CustomData))
-            {
-                OwnerBlock.CustomData = Config.ToIniText();
-            }
-
+            // Do NOT seed CustomData — that field belongs to the user. Config defaults come from its own
+            // field initializers, so nothing needs to be written to the block.
             try
             {
                 var surface = Surface;

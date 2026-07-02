@@ -13,6 +13,16 @@ namespace GridSchematics
         LineEndpoint
     }
 
+    public enum ConveyorNodeRole
+    {
+        Generic,
+        Storage,
+        GasTank,
+        Production,
+        Connector,
+        Sorter
+    }
+
     public class ConveyorTopology
     {
         public List<ConveyorNode> Nodes { get; private set; }
@@ -63,6 +73,7 @@ namespace GridSchematics
                 DiscoverObjectBuilderLines(topology, grid, basisMatrix, basisGridSize);
             }
 
+            LinkPortsToNodes(topology);
             return topology;
         }
 
@@ -101,7 +112,9 @@ namespace GridSchematics
                 BasisPosition = basisPosition,
                 BasisCenter = basisCenter,
                 Orientation = fat.WorldMatrix.Forward,
+                BasisOrientation = WorldDirectionToBasis(fat.WorldMatrix.Forward, basisMatrix),
                 Kind = ConveyorNodeKind.Block,
+                Role = ClassifyNodeRole(fat),
                 IsFunctional = IsFunctional(fat),
                 IsWorking = IsWorking(fat)
             };
@@ -239,6 +252,96 @@ namespace GridSchematics
             });
         }
 
+        static ConveyorNodeRole ClassifyNodeRole(IMyCubeBlock block)
+        {
+            if (block as IMyConveyorSorter != null)
+                return ConveyorNodeRole.Sorter;
+            if (block as IMyShipConnector != null)
+                return ConveyorNodeRole.Connector;
+            if (block as IMyGasTank != null)
+                return ConveyorNodeRole.GasTank;
+            if (block as IMyProductionBlock != null)
+                return ConveyorNodeRole.Production;
+            if (block as IMyGasGenerator != null)
+                return ConveyorNodeRole.Production;
+            if (block as IMyReactor != null)
+                return ConveyorNodeRole.Production;
+            if (block as IMyCargoContainer != null)
+                return ConveyorNodeRole.Storage;
+
+            var typeId = block.BlockDefinition.TypeIdString;
+            if (typeId != null)
+            {
+                // Producers without a dedicated ModAPI interface (or whose interface
+                // is not whitelist-safe): hydrogen engines, store/vending blocks.
+                if (typeId.IndexOf("HydrogenEngine", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    typeId.IndexOf("StoreBlock", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    typeId.IndexOf("VendingMachine", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return ConveyorNodeRole.Production;
+            }
+
+            return ConveyorNodeRole.Generic;
+        }
+
+        // Line endpoints are created with NodeId = 0; resolve them against block bounds so
+        // ports know which block they feed. Icon rendering depends on this link.
+        static void LinkPortsToNodes(ConveyorTopology topology)
+        {
+            if (topology.Ports.Count == 0 || topology.Nodes.Count == 0)
+                return;
+
+            const int maxNodeCellVolume = 96;
+            var cellOwners = new Dictionary<long, Dictionary<Vector3I, long>>();
+            for (int i = 0; i < topology.Nodes.Count; i++)
+            {
+                var node = topology.Nodes[i];
+                if (node == null)
+                    continue;
+
+                int sx = Math.Abs(node.GridMax.X - node.GridMin.X) + 1;
+                int sy = Math.Abs(node.GridMax.Y - node.GridMin.Y) + 1;
+                int sz = Math.Abs(node.GridMax.Z - node.GridMin.Z) + 1;
+                if (sx * sy * sz > maxNodeCellVolume)
+                    continue;
+
+                Dictionary<Vector3I, long> gridCells;
+                if (!cellOwners.TryGetValue(node.GridEntityId, out gridCells))
+                {
+                    gridCells = new Dictionary<Vector3I, long>();
+                    cellOwners[node.GridEntityId] = gridCells;
+                }
+
+                for (int x = node.GridMin.X; x <= node.GridMax.X; x++)
+                    for (int y = node.GridMin.Y; y <= node.GridMax.Y; y++)
+                        for (int z = node.GridMin.Z; z <= node.GridMax.Z; z++)
+                            gridCells[new Vector3I(x, y, z)] = node.BlockEntityId;
+            }
+
+            for (int i = 0; i < topology.Ports.Count; i++)
+            {
+                var port = topology.Ports[i];
+                if (port == null)
+                    continue;
+
+                Dictionary<Vector3I, long> gridCells;
+                if (!cellOwners.TryGetValue(port.GridEntityId, out gridCells))
+                    continue;
+
+                long nodeId;
+                if (gridCells.TryGetValue(port.NeighborGridPosition, out nodeId) ||
+                    gridCells.TryGetValue(port.LocalGridPosition, out nodeId))
+                    port.NodeId = nodeId;
+            }
+        }
+
+        static Vector3D WorldDirectionToBasis(Vector3D worldDirection, MatrixD basisMatrix)
+        {
+            return new Vector3D(
+                Vector3D.Dot(worldDirection, basisMatrix.Right),
+                Vector3D.Dot(worldDirection, basisMatrix.Up),
+                Vector3D.Dot(worldDirection, basisMatrix.Forward));
+        }
+
         static bool IsPublicConveyorParticipant(IMyCubeBlock block)
         {
             if (block as IMyConveyor != null)
@@ -373,7 +476,9 @@ namespace GridSchematics
         public Vector3I BasisPosition;
         public Vector3D BasisCenter;
         public Vector3D Orientation;
+        public Vector3D BasisOrientation;
         public ConveyorNodeKind Kind;
+        public ConveyorNodeRole Role;
         public bool IsFunctional;
         public bool IsWorking;
     }

@@ -636,20 +636,17 @@ namespace GridSchematics
             {
                 ulong hash = 1469598103934665603UL;
                 AccumulateHash(ref hash, ConstructId);
-                AccumulateHash(ref hash, rootGrid != null ? rootGrid.EntityId : 0);
+
+                // Coarse, HOST-SCOPED signature: identity + block count + integer bounding box of each
+                // same-construct grid, sorted by EntityId. Deliberately excludes per-block positions AND
+                // connector-attached grids (which reconnect asynchronously on world load). This lets an
+                // unchanged ship reliably re-match its saved scan across reloads, while genuine structural
+                // edits (blocks added / removed / grid resized) still invalidate it.
                 var constructGrids = new List<IMyCubeGrid>(ConstructGrids);
-                var hullScanTargetGrids = new List<IMyCubeGrid>(HullScanTargetGrids);
                 SortGridsByEntityId(constructGrids);
-                SortGridsByEntityId(hullScanTargetGrids);
-
                 AccumulateHash(ref hash, constructGrids.Count);
-                AccumulateHash(ref hash, ValidHullScanGridIds.Count);
-                AccumulateHash(ref hash, hullScanTargetGrids.Count);
-
                 for (int i = 0; i < constructGrids.Count; i++)
                     AccumulateGridSignature(ref hash, constructGrids[i]);
-                for (int i = 0; i < hullScanTargetGrids.Count; i++)
-                    AccumulateGridSignature(ref hash, hullScanTargetGrids[i]);
 
                 return hash.ToString("X");
             }
@@ -664,8 +661,13 @@ namespace GridSchematics
             }
 
             AccumulateHash(ref hash, grid.EntityId);
-            AccumulateHash(ref hash, IsGridStatic(grid) ? 1 : 0);
             AccumulateHash(ref hash, (int)grid.GridSizeEnum);
+            AccumulateHash(ref hash, grid.Min.X);
+            AccumulateHash(ref hash, grid.Min.Y);
+            AccumulateHash(ref hash, grid.Min.Z);
+            AccumulateHash(ref hash, grid.Max.X);
+            AccumulateHash(ref hash, grid.Max.Y);
+            AccumulateHash(ref hash, grid.Max.Z);
 
             var blocks = new List<IMySlimBlock>();
             try
@@ -677,23 +679,6 @@ namespace GridSchematics
             }
 
             AccumulateHash(ref hash, blocks.Count);
-            blocks.Sort(CompareSlimBlocks);
-            for (int i = 0; i < blocks.Count; i++)
-            {
-                var block = blocks[i];
-                if (block == null)
-                    continue;
-
-                AccumulateHash(ref hash, block.Position.X);
-                AccumulateHash(ref hash, block.Position.Y);
-                AccumulateHash(ref hash, block.Position.Z);
-                AccumulateHash(ref hash, block.Min.X);
-                AccumulateHash(ref hash, block.Min.Y);
-                AccumulateHash(ref hash, block.Min.Z);
-                AccumulateHash(ref hash, block.Max.X);
-                AccumulateHash(ref hash, block.Max.Y);
-                AccumulateHash(ref hash, block.Max.Z);
-            }
         }
 
         static void SortGridsByEntityId(List<IMyCubeGrid> grids)

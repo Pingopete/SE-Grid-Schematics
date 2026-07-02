@@ -91,5 +91,45 @@
       <SpritePath>Textures\UI\Icon_Triangle.dds</SpritePath>
       <Selectable>false</Selectable>
     </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_VertRunDown" />
+      <SpritePath>Textures\UI\Icon_VertRunDown.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_VertRunUp" />
+      <SpritePath>Textures\UI\Icon_VertRunUp.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Production" />
+      <SpritePath>Textures\UI\Icon_Production.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_GasTank" />
+      <SpritePath>Textures\UI\Icon_GasTank.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_Storage" />
+      <SpritePath>Textures\UI\Icon_Storage.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_SorterValve" />
+      <SpritePath>Textures\UI\Icon_SorterValve.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_ConnectorFlangeSide" />
+      <SpritePath>Textures\UI\Icon_ConnectorFlangeSide.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
+    <LCDTextureDefinition>
+      <Id Type="LCDTextureDefinition" Subtype="GridSchematics_Icon_ConnectorFlangeFront" />
+      <SpritePath>Textures\UI\Icon_ConnectorFlangeFront.dds</SpritePath>
+      <Selectable>false</Selectable>
+    </LCDTextureDefinition>
   </LCDTextures>
 </Definitions>
